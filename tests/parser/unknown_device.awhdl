@@ -1,0 +1,14 @@
+entity broken is
+    port (
+        task   : in  text<internal>;
+        result : out text<internal>
+    );
+end broken;
+
+architecture behavioral of broken is
+begin
+    process(task)
+    begin
+        missing.run(task) -> result;
+    end process;
+end behavioral;

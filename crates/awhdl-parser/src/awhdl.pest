@@ -1,0 +1,67 @@
+WHITESPACE = _{ " " | "\t" | NEWLINE | COMMENT }
+COMMENT = _{ "--" ~ (!NEWLINE ~ ANY)* }
+
+program = { SOI ~ design_unit+ ~ EOI }
+design_unit = { entity_decl | architecture_decl }
+
+entity_decl = { kw_entity ~ ident ~ kw_is ~ port_clause? ~ kw_end ~ ident? ~ semi }
+port_clause = { kw_port ~ lparen ~ port_decl ~ (semi ~ port_decl)* ~ semi? ~ rparen ~ semi }
+port_decl = { ident_list ~ colon ~ port_mode ~ data_type }
+port_mode = { kw_inout | kw_in | kw_out }
+
+architecture_decl = {
+    kw_architecture ~ ident ~ kw_of ~ ident ~ kw_is ~ declaration* ~ kw_begin ~
+    concurrent_statement* ~ kw_end ~ ident? ~ semi
+}
+declaration = { device_decl | signal_decl }
+device_decl = { kw_device ~ ident ~ colon ~ ident ~ semi }
+signal_decl = { kw_signal ~ ident_list ~ colon ~ data_type ~ (assign_var ~ expression)? ~ semi }
+
+concurrent_statement = { process_stmt }
+process_stmt = {
+    kw_process ~ lparen ~ name_list? ~ rparen ~ kw_begin ~ sequential_statement* ~
+    kw_end ~ kw_process ~ semi
+}
+sequential_statement = { device_call | assignment | null_stmt }
+device_call = { selected_name ~ lparen ~ argument_list? ~ rparen ~ arrow ~ ident ~ semi }
+assignment = { ident ~ assign_signal ~ expression ~ semi }
+null_stmt = { kw_null ~ semi }
+
+selected_name = { ident ~ dot ~ ident }
+argument_list = { expression ~ (comma ~ expression)* }
+expression = @{ string_literal | integer | selected_name | ident }
+data_type = { ident ~ (lt ~ ident ~ gt)? }
+ident_list = { ident ~ (comma ~ ident)* }
+name_list = { selected_name_or_ident ~ (comma ~ selected_name_or_ident)* }
+selected_name_or_ident = @{ ident ~ (dot ~ ident)? }
+
+ident = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
+integer = @{ "-"? ~ ASCII_DIGIT+ }
+string_literal = @{ "\"" ~ ("\\\"" | !"\"" ~ ANY)* ~ "\"" }
+
+kw_entity = _{ "entity" }
+kw_architecture = _{ "architecture" }
+kw_device = _{ "device" }
+kw_signal = _{ "signal" }
+kw_process = _{ "process" }
+kw_port = _{ "port" }
+kw_is = _{ "is" }
+kw_of = _{ "of" }
+kw_begin = _{ "begin" }
+kw_end = _{ "end" }
+kw_inout = { "inout" }
+kw_in = { "in" }
+kw_out = { "out" }
+kw_null = _{ "null" }
+
+lparen = _{ "(" }
+rparen = _{ ")" }
+colon = _{ ":" }
+semi = _{ ";" }
+comma = _{ "," }
+dot = _{ "." }
+lt = _{ "<" }
+gt = _{ ">" }
+arrow = _{ "->" }
+assign_signal = _{ "<=" }
+assign_var = _{ ":=" }

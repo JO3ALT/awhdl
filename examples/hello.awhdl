@@ -1,0 +1,15 @@
+entity hello is
+    port (
+        task   : in  text<internal>;
+        result : out text<internal>
+    );
+end hello;
+
+architecture behavioral of hello is
+    device llm : local_llm;
+begin
+    process(task)
+    begin
+        llm.run(task) -> result;
+    end process;
+end behavioral;
