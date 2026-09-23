@@ -413,8 +413,8 @@ AWHDL -> AST -> 静的検査 -> AI Conductor IR -> 実行計画 -> runtime
 
 ## Phase 1 execution identity addendum（2026-09-23）
 
-実行 identity の規範は [Runtime semantics](RUNTIME_SPEC.md) と
-[IR specification](IR_SPEC.md) に定義する。この範囲では本追補を優先する。
+実行 identity の規範は [Runtime semantics](RUNTIME_SPEC_ja.md) と
+[IR specification](IR_SPEC_ja.md) に定義する。この範囲では本追補を優先する。
 統合ランタイムに invocation / generation / correlation、checkpoint 復元、
 generation-aware barrier の API を実装済み。AWHDL compiler は Milestone 1 のままで、
 言語の compile/run、signal/event scheduler、CLI resume の実装完了を意味しない。
@@ -424,8 +424,8 @@ generation-aware barrier の API を実装済み。AWHDL compiler は Milestone 
 
 Value は最新値、Event は一回の通知、Invocation は呼び出しの状態と結果として区別する。
 同値代入は changed を発生させず、同一 payload の別 Event はそれぞれ消費する。
-実行意味論は [Runtime spec](RUNTIME_SPEC.md)、形式 v2 は
-[IR spec](IR_SPEC.md) を規範とし、この範囲では両文書を優先する。
+実行意味論は [Runtime spec](RUNTIME_SPEC_ja.md)、形式 v2 は
+[IR spec](IR_SPEC_ja.md) を規範とし、この範囲では両文書を優先する。
 永続化した消費記録で再配送を防ぐが、外部副作用の exactly-once は保証しない。
 新しい感度リスト構文・delta-cycle 実行は未実装。
 [移行・実装境界](MIGRATION_PHASE_2.md) を参照。
@@ -434,8 +434,8 @@ Value は最新値、Event は一回の通知、Invocation は呼び出しの状
 
 外部書き込みは実行前に Effect を記録し、結果が不明なときは `UNCERTAIN` として
 自動再送を止める。冪等キーは runtime が作り、同一 action instance の再試行で維持する。
-適用範囲の規範は [Runtime spec](RUNTIME_SPEC.md) と
-[IR spec](IR_SPEC.md) とし、本追補がその範囲で優先する。
+適用範囲の規範は [Runtime spec](RUNTIME_SPEC_ja.md) と
+[IR spec](IR_SPEC_ja.md) とし、本追補がその範囲で優先する。
 現在の形式は checkpoint v3。照合 API は実装したが、provider の自動照会・
 CLI resume は未実装。[移行・制約](MIGRATION_PHASE_3.md) を参照。
 
@@ -469,7 +469,7 @@ soft のみ。external / destructive の step を含む workflow は safety-crit
 
 ## Phase 7 v0.1 Profile（2026-09-23）
 
-v0.1 の実装範囲と機能の状態は [PROFILE_v0.1](PROFILE_v0.1.md) だけが定める。
+v0.1 の実装範囲と機能の状態は [PROFILE_v0.1](PROFILE_v0.1_ja.md) だけが定める。
 本仕様は目標とする言語・システムを記述し、Profile が v0.1 と定めていない構文・機能は
 v0.1 では未対応とする。規範文書は `docs/` の LANGUAGE_SPEC・RUNTIME_SPEC・SECURITY_SPEC・
 IR_SPEC・PROFILE_v0.1 で、矛盾時は Profile、次にそれらの仕様が優先する。

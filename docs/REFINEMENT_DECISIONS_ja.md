@@ -1,7 +1,7 @@
 # 仕様整理の設計判断
 
 > **位置づけ（Phase 7）:** 非規範。規範文書は LANGUAGE_SPEC・RUNTIME_SPEC・SECURITY_SPEC・
-> IR_SPEC・PROFILE_v0.1 で、v0.1 の範囲と実装状態は [PROFILE_v0.1](PROFILE_v0.1.md) のみが定める。
+> IR_SPEC・PROFILE_v0.1 で、v0.1 の範囲と実装状態は [PROFILE_v0.1](PROFILE_v0.1_ja.md) のみが定める。
 
 対象: `AI_CONDUCTOR_SPEC_REFINEMENT_PROCEDURE_1-7.md`。
 既存の言語設計判断は `DESIGN_DECISIONS_ja.md` を参照。

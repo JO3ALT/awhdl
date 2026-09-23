@@ -1,11 +1,15 @@
 # AWHDL language specification
 
+[日本語（正本）](LANGUAGE_SPEC_ja.md) | English reference translation
+
 > **Source of truth.** Normative: [LANGUAGE_SPEC](LANGUAGE_SPEC.md),
 > [RUNTIME_SPEC](RUNTIME_SPEC.md), [SECURITY_SPEC](SECURITY_SPEC.md),
 > [IR_SPEC](IR_SPEC.md) and [PROFILE_v0.1](PROFILE_v0.1.md). Non-normative:
 > [IMPLEMENTATION_GUIDE](IMPLEMENTATION_GUIDE.md), examples, tutorials,
 > migration notes and status reports. On conflict, PROFILE_v0.1 wins, then the
 > normative specs. Only PROFILE_v0.1 defines the v0.1 implementation scope.
+> This English document is a reference translation; the Japanese document is
+> normative and takes precedence if the versions differ.
 
 Scope: syntax, type system, static semantics and language constructs of AWHDL.
 This document does not define the implementation scope; a construct described

@@ -115,16 +115,18 @@ Parse and structural errors return a non-zero status and a source location.
 | Publication checklist | [English](docs/PUBLICATION_CHECKLIST.md) | [日本語](docs/PUBLICATION_CHECKLIST_ja.md) |
 | cvim boundary | [English](cvim/README.md) | [日本語](cvim/README_ja.md) |
 | Implementation guide | [English](IMPLEMENTATION_GUIDE_v0.2.md) | [日本語](IMPLEMENTATION_GUIDE_v0.2_ja.md) |
-| v0.1 profile (scope and status) | [English](docs/PROFILE_v0.1.md) | — |
-| Language, runtime, security, IR specifications (normative) | [LANGUAGE](docs/LANGUAGE_SPEC.md), [RUNTIME](docs/RUNTIME_SPEC.md), [SECURITY](docs/SECURITY_SPEC.md), [IR](docs/IR_SPEC.md) | — |
+| v0.1 profile (scope and status) | [English](docs/PROFILE_v0.1.md) | [日本語](docs/PROFILE_v0.1_ja.md) |
+| Language specification (normative entry point) | [English](docs/LANGUAGE_SPEC.md) | [日本語](docs/LANGUAGE_SPEC_ja.md) |
+| Runtime specification | [English](docs/RUNTIME_SPEC.md) | [日本語](docs/RUNTIME_SPEC_ja.md) |
+| Security specification | [English](docs/SECURITY_SPEC.md) | [日本語](docs/SECURITY_SPEC_ja.md) |
+| IR specification | [English](docs/IR_SPEC.md) | [日本語](docs/IR_SPEC_ja.md) |
+| Implementation guide (v0.1) | [English](docs/IMPLEMENTATION_GUIDE.md) | [日本語](docs/IMPLEMENTATION_GUIDE_ja.md) |
 | Specification refinement decisions | — | [日本語](docs/REFINEMENT_DECISIONS_ja.md) |
 
 The specifications describe the intended design. The v0.1 scope and each
 feature's status are defined only by the matrix in
 [PROFILE_v0.1](docs/PROFILE_v0.1.md), which a test keeps consistent with the
-code; the implementation-status document summarizes it. The refinement
-documents (profile and LANGUAGE/RUNTIME/SECURITY/IR specs) are English only for
-now; Japanese versions have not been written yet.
+code; the implementation-status document summarizes it.
 
 The Japanese documents are normative. The English documents are reference
 translations; if the two versions differ, the Japanese version takes

@@ -1,5 +1,7 @@
 # Profile v0.2 (planning)
 
+[日本語（正本）](PROFILE_v0.2_ja.md) | English reference translation
+
 > **Planning document, not normative for v0.1.** The single status record for
 > every feature, including those planned for v0.2, is the matrix in
 > [PROFILE_v0.1](PROFILE_v0.1.md). This page only groups the rows whose

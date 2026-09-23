@@ -1,11 +1,15 @@
 # Security specification
 
+[日本語（正本）](SECURITY_SPEC_ja.md) | English reference translation
+
 > **Source of truth.** Normative: [LANGUAGE_SPEC](LANGUAGE_SPEC.md),
 > [RUNTIME_SPEC](RUNTIME_SPEC.md), [SECURITY_SPEC](SECURITY_SPEC.md),
 > [IR_SPEC](IR_SPEC.md) and [PROFILE_v0.1](PROFILE_v0.1.md). Non-normative:
 > [IMPLEMENTATION_GUIDE](IMPLEMENTATION_GUIDE.md), examples, tutorials,
 > migration notes and status reports. On conflict, PROFILE_v0.1 wins, then the
 > normative specs. Only PROFILE_v0.1 defines the v0.1 implementation scope.
+> This English document is a reference translation; the Japanese document is
+> normative and takes precedence if the versions differ.
 
 Scope: trust principles, classification, taint, cloud egress, declassification,
 capabilities, human approval and audit. Whether each item is required in v0.1,
@@ -96,11 +100,8 @@ reserve Effect (NOT_STARTED)
   `approval_decided` (state) and the consumed `approval_id` on `effect_started`.
   Parameters are not written to audit.
 
-No Human approval adapter is connected to the serial engine yet. A route that
-requires approval therefore fails closed: the Effect remains `NOT_STARTED` and
-the provider is not called. HumanPort currently exposes `human.answer` over the
-same MCP surface, so it must be split so that an agent cannot answer its own
-approval before it can serve as an approver.
+The Human approval adapter is described under "Human approval adapter" below;
+without it, approval-bound writes fail closed.
 
 ## Capability model
 
@@ -134,7 +135,7 @@ authorize(subject, CapabilityRequest { action, resource, params }) -> { id, hand
   value equal or a literal the parent pattern matches, and a class no higher.
   Revoked grants deny and cannot be narrowed.
 
-Enforcement points in the serial engine:
+Enforcement points in the engine (planner runs and design runs):
 
 | Access | Request | Where |
 |---|---|---|

@@ -1,11 +1,15 @@
 # Execution IR specification
 
+[日本語（正本）](IR_SPEC_ja.md) | English reference translation
+
 > **Source of truth.** Normative: [LANGUAGE_SPEC](LANGUAGE_SPEC.md),
 > [RUNTIME_SPEC](RUNTIME_SPEC.md), [SECURITY_SPEC](SECURITY_SPEC.md),
 > [IR_SPEC](IR_SPEC.md) and [PROFILE_v0.1](PROFILE_v0.1.md). Non-normative:
 > [IMPLEMENTATION_GUIDE](IMPLEMENTATION_GUIDE.md), examples, tutorials,
 > migration notes and status reports. On conflict, PROFILE_v0.1 wins, then the
 > normative specs. Only PROFILE_v0.1 defines the v0.1 implementation scope.
+> This English document is a reference translation; the Japanese document is
+> normative and takes precedence if the versions differ.
 
 Scope: versioning, invocation metadata, action descriptors, Value / Event
 encoding, Effect and approval state, and the checkpoint format.
@@ -13,10 +17,11 @@ encoding, Effect and approval state, and the checkpoint format.
 Current format: v5 (execution, Effect, approval and capability binding).
 Machine-readable schema:
 [`schema/execution-v5.schema.json`](schema/execution-v5.schema.json).
-The v1–v4 schemas in [`schema/`](schema) are historical; current restore rejects them. This is runtime state, not an AWHDL program compiler.
+The v1–v4 schemas in [`schema/`](schema) are historical; current restore rejects them. This is runtime state, not an AWHDL program IR (see "Compiled design").
 
-`ExecutionState` serializes `version: 3`, `workflow_run_id`, `correlation_id`,
-`generation`, `records` (invocation UUID → `Invocation<JSON>`), `dataflow`, and `effects` (Effect UUID → Effect).
+`ExecutionState` serializes `version: 5`, `workflow_run_id`, `correlation_id`,
+`generation`, `records` (invocation UUID → `Invocation<JSON>`), `dataflow`,
+`effects` (Effect UUID → Effect) and `approvals` (approval UUID → approval).
 A record has `identity`, `operation`, `status` and `result`. Status is `pending`,
 `completed`, `failed` or `cancelled`. Only completed records carry a result,
 wrapped as `{"payload": T}` so a successful JSON null survives serialization.
@@ -57,7 +62,8 @@ The checkpoint is payload-bearing. Metadata-only audit JSONL is separate.
 
 Each Effect contains `effect_id`, `scope`, `operation`, `action`, `resource`,
 `payload_hash` (64 lowercase SHA-256 hex characters over canonical JSON
-arguments), `class`, `idempotency_key`, `state`, nullable `invocation_id`, and
+arguments), `class`, `capability`, `idempotency_key`, `state`,
+`requires_approval`, nullable `invocation_id`, and
 nullable `result` (`{"payload": T}` when confirmed, including JSON null).
 Effect classes are `pure`, `read`, `local_write`, `external_write`, and
 `destructive`; the journal accepts the last three. States are `not_started`,

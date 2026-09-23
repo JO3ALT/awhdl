@@ -76,11 +76,15 @@ cargo run -p conductor-cli -- check examples/hello.awhdl --output json
 | 公開前チェックリスト | [日本語](docs/PUBLICATION_CHECKLIST_ja.md) | [English](docs/PUBLICATION_CHECKLIST.md) |
 | cvimの責務境界 | [日本語](cvim/README_ja.md) | [English](cvim/README.md) |
 | 実装ガイド | [日本語](IMPLEMENTATION_GUIDE_v0.2_ja.md) | [English](IMPLEMENTATION_GUIDE_v0.2.md) |
-| v0.1 Profile（範囲と状態の正本） | — | [English](docs/PROFILE_v0.1.md) |
-| 言語・Runtime・Security・IR 仕様（規範） | — | [LANGUAGE](docs/LANGUAGE_SPEC.md)・[RUNTIME](docs/RUNTIME_SPEC.md)・[SECURITY](docs/SECURITY_SPEC.md)・[IR](docs/IR_SPEC.md) |
+| v0.1 Profile（範囲と状態の正本） | [日本語](docs/PROFILE_v0.1_ja.md) | [English](docs/PROFILE_v0.1.md) |
+| 言語仕様（規範の入口） | [日本語](docs/LANGUAGE_SPEC_ja.md) | [English](docs/LANGUAGE_SPEC.md) |
+| Runtime 仕様 | [日本語](docs/RUNTIME_SPEC_ja.md) | [English](docs/RUNTIME_SPEC.md) |
+| Security 仕様 | [日本語](docs/SECURITY_SPEC_ja.md) | [English](docs/SECURITY_SPEC.md) |
+| IR 仕様 | [日本語](docs/IR_SPEC_ja.md) | [English](docs/IR_SPEC.md) |
+| 実装ガイド（v0.1） | [日本語](docs/IMPLEMENTATION_GUIDE_ja.md) | [English](docs/IMPLEMENTATION_GUIDE.md) |
 | 仕様整理の設計判断 | [日本語](docs/REFINEMENT_DECISIONS_ja.md) | — |
 
-日本語版を規範文書（正本）とし、英語版は理解と国際的な共有を助けるための参考訳とします。両者に差異がある場合は日本語版が優先されます。v0.1 の実装範囲と各機能の状態は [PROFILE_v0.1](docs/PROFILE_v0.1.md) の表だけが定めます（テストでコードとの対応を検査）。[実装状況](docs/IMPLEMENTATION_STATUS_ja.md)はその要約です。仕様整理で追加した規範文書（Profile・LANGUAGE/RUNTIME/SECURITY/IR_SPEC）は現在英語のみで、日本語版は未作成です。
+日本語版を規範文書（正本）とし、英語版は理解と国際的な共有を助けるための参考訳とします。両者に差異がある場合は日本語版が優先されます。v0.1 の実装範囲と各機能の状態は [PROFILE_v0.1](docs/PROFILE_v0.1_ja.md) の表だけが定めます（テストでコードとの対応を検査）。[実装状況](docs/IMPLEMENTATION_STATUS_ja.md)はその要約です。
 
 ## ワークスペース
 
@@ -100,7 +104,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 ## 現在の制限
 
-未達の項目は [PROFILE_v0.1](docs/PROFILE_v0.1.md) の「v0.1 gaps」を参照してください。runtime のテストは同梱の匿名化した設定（`crates/aiconductor-runtime/tests/fixtures/project`）で動き、外部の LLM・MCP・人間は不要です。実機の device を使う確認は `examples/` の live 例で行います。未対応構文は診断を出して拒否し、黙って受理しません。
+未達の項目は [PROFILE_v0.1](docs/PROFILE_v0.1_ja.md) の「v0.1 の未達と既知の逸脱」を参照してください。runtime のテストは同梱の匿名化した設定（`crates/aiconductor-runtime/tests/fixtures/project`）で動き、外部の LLM・MCP・人間は不要です。実機の device を使う確認は `examples/` の live 例で行います。未対応構文は診断を出して拒否し、黙って受理しません。
 
 ## ライセンス
 

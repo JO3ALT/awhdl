@@ -1,15 +1,19 @@
 # Runtime specification
 
+[日本語（正本）](RUNTIME_SPEC_ja.md) | English reference translation
+
 > **Source of truth.** Normative: [LANGUAGE_SPEC](LANGUAGE_SPEC.md),
 > [RUNTIME_SPEC](RUNTIME_SPEC.md), [SECURITY_SPEC](SECURITY_SPEC.md),
 > [IR_SPEC](IR_SPEC.md) and [PROFILE_v0.1](PROFILE_v0.1.md). Non-normative:
 > [IMPLEMENTATION_GUIDE](IMPLEMENTATION_GUIDE.md), examples, tutorials,
 > migration notes and status reports. On conflict, PROFILE_v0.1 wins, then the
 > normative specs. Only PROFILE_v0.1 defines the v0.1 implementation scope.
+> This English document is a reference translation; the Japanese document is
+> normative and takes precedence if the versions differ.
 
 Scope: invocation identity, generation, correlation, Value / Event / Invocation,
 event delivery, barriers, cancellation, retry, checkpoint and crash recovery,
-Effect semantics, and completion evaluation. Execution semantics here take
+Effect semantics, completion evaluation, and AWHDL design execution. Execution semantics here take
 precedence over runtime descriptions in the language and system specs.
 Machine-readable formats are in [IR_SPEC](IR_SPEC.md).
 
@@ -42,8 +46,12 @@ A barrier names required operation slots. It is ready only when every slot has
 a completed invocation in the current run/correlation/generation. Missing or
 failed slots do not make it ready. Foreign generations, unknown identities,
 unexpected/duplicate slots and superseded attempts are errors. Mere presence of
-a stored payload never makes a barrier ready. This is implemented as an API;
-the parser does not yet support parallel/barrier syntax or scheduling.
+a stored payload never makes a barrier ready.
+
+The AWHDL `barrier` construct is executed per signal by the design interpreter
+(see "AWHDL design execution"): it raises `barrier.ready` when all member
+signals were written since it last fired. That interpreter barrier is
+independent of the persistent API above.
 
 ## Checkpoint and recovery
 
@@ -65,9 +73,10 @@ restoration as a runtime API, not end-to-end CLI resumption.
 
 ## Integration boundaries
 
-The existing engine is serial and runs one logical input, generation 0. Generation
-advancement and barrier APIs prepare its future scheduler without pretending it
-already executes AWHDL parallel processes. All three device dispatch paths
+The planner-driven engine (`aiconductor run`) is serial and runs one logical
+input, generation 0. AWHDL designs run through a separate path
+(`aiconductor run-design`, below) with delta cycles. Generation advancement and
+barrier APIs prepare a future scheduler. All three device dispatch paths
 (planner, model including fallback/polishing, MCP) pass through `RunStore::invoke`.
 Model health probes and model launcher administration are control-plane operations,
 not workflow device invocations. Duplicate MCP suppression does not dispatch a
@@ -75,8 +84,7 @@ new call and therefore does not allocate a device invocation.
 
 The envelope is validated before the legacy engine consumes its payload.
 Runtime invocation success denotes transport completion; existing adapter and
-action checks still decide semantic success. Phase 2 adds dataflow storage below;
-this does not turn the legacy serial engine into an AWHDL event scheduler.
+action checks still decide semantic success.
 
 ## Value, Event and Invocation (Phase 2)
 
@@ -123,19 +131,22 @@ These are distinct semantic triggers, not synonyms:
 | `process(invocation.completed)` | `InvocationTerminated` with matching invocation and completed status |
 
 Failed/cancelled lifecycles do not satisfy completed sensitivity. Value existence
-alone never constitutes an event. These spellings describe future language
-semantics. The existing parser already retains dotted sensitivity names as plain
-strings, and the structural checker only checks their root name. Neither assigns
-Value/Event/Invocation trigger semantics. New `event` declarations remain rejected;
-no source grammar or AST change is made in this phase.
+alone never constitutes an event.
+
+The AWHDL design interpreter (below) follows this distinction for `name` /
+`name.changed` (a value change), `device.done` / `device.failed` /
+`device.timeout` (a call's terminal state), timers and `barrier.ready`. These are
+in-memory interpreter events, not yet connected to the persistent Event store
+above. `event` declarations and the `.completed` spelling are rejected because
+their syntax is open (LANGUAGE_SPEC).
 
 Delta cycles concern deterministic propagation of changed Values within a
 logical scheduling step. MCP/LLM completions, timers, approval arrivals, webhooks,
 timeouts, cancellation and budget exhaustion enter through runtime events, not
-through polling a retained Value or replaying a delta cycle. In this phase the
-storage API persists changed notifications in the same ordered event history,
-distinguished by kind; it does not execute delta cycles or schedule processes.
-Timer/webhook/approval providers and event subscriptions remain future adapters.
+through polling a retained Value or replaying a delta cycle. The persistent
+store API records changed notifications in the same ordered event history,
+distinguished by kind. Webhook and approval-arrival event providers, and event
+subscriptions over the persistent store, remain future adapters.
 
 ## Durable delivery boundary
 
@@ -156,8 +167,8 @@ The store currently rewrites the full snapshot; this is a single-host prototype,
 not a bounded queue or concurrent multi-process journal.
 
 Runtime checkpoints now include Value/Event/result payloads and must retain their
-workflow confidentiality. This change adds no payload to audit JSONL. Existing
-structural checking is unchanged; checkpoint validation does not establish
+workflow confidentiality. No payload is added to audit JSONL. Checkpoint
+validation does not establish
 classification, authorization or capability compliance.
 
 ## Effect, retry and idempotency (Phase 3)

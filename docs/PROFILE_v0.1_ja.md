@@ -1,44 +1,34 @@
 # AWHDL / AI Conductor Profile v0.1
 
-[日本語（正本）](PROFILE_v0.1_ja.md) | English reference translation
+日本語（正本） | [English reference translation](PROFILE_v0.1.md)
 
-> This English document is a reference translation. The Japanese document is
-> normative and takes precedence if the versions differ.
+> **正本の範囲。** 規範文書: [LANGUAGE_SPEC](LANGUAGE_SPEC_ja.md)、
+> [RUNTIME_SPEC](RUNTIME_SPEC_ja.md)、[SECURITY_SPEC](SECURITY_SPEC_ja.md)、
+> [IR_SPEC](IR_SPEC_ja.md) と本 Profile。非規範: [IMPLEMENTATION_GUIDE](IMPLEMENTATION_GUIDE_ja.md)、
+> 例、チュートリアル、移行メモ、状態報告。矛盾時は本 Profile、次に各規範文書が優先する。
+> 日本語版を正本とし、英語版は参考訳とする。差異がある場合は日本語版が優先する。
 
-> **Source of truth.** Normative: [LANGUAGE_SPEC](LANGUAGE_SPEC.md),
-> [RUNTIME_SPEC](RUNTIME_SPEC.md), [SECURITY_SPEC](SECURITY_SPEC.md),
-> [IR_SPEC](IR_SPEC.md) and this profile. Non-normative:
-> [IMPLEMENTATION_GUIDE](IMPLEMENTATION_GUIDE.md), examples, tutorials,
-> migration notes and status reports. On conflict, this profile wins, then the
-> normative specs.
+本書は、v0.1 が実装しなければならない範囲を定める**唯一**の文書である。他の文書は v0.1 の範囲を
+追加も削除もしてはならない。ここに記載のない機能、または Profile が `v0.2` の機能は v0.1 の範囲外であり、
+対応する [設計判断](REFINEMENT_DECISIONS_ja.md) を記録したうえで本書に移すまで実装してはならない。
 
-This document is the **only** definition of what v0.1 must implement. No other
-document may add to or remove from the v0.1 scope. A feature not listed here, or
-listed with profile `v0.2`, is out of scope for v0.1 and must not be
-implemented until it is moved here with a matching entry in
-[DESIGN_DECISIONS](REFINEMENT_DECISIONS_ja.md).
+## 範囲の規則
 
-## Scope rule
+基本範囲は仕様整理手順書が推奨する v0.1 の subset に従う。本システムはすでに外部書き込み
+（`open_data_acquisition`、full access の Codex）を許可しているため、手順書の規則どおり、Effect journal・
+idempotency・照合（reconciliation）・永続 checkpoint・action に bind した承認を先送りせず v0.1 に**含める**。
+基本的な capability 検査には、planner が渡すファイルパスの範囲制限を含める。これがなければ capability
+検査が意味をなさないためである。
 
-The base scope follows the refinement procedure's recommended v0.1 subset. The
-system already permits external writes (`open_data_acquisition`, Codex with full
-access), so, as the procedure requires, the Effect journal, idempotency,
-reconciliation, persistent checkpoints and action-bound approval are **in**
-v0.1 rather than deferred. Basic capability checks include filesystem scoping of
-planner-supplied paths, which is required to make the capability check
-meaningful.
+v0.1 の行は、該当するすべての列が `yes` のときに限り**適合**とする。すべての v0.1 行が適合したとき
+v0.1 は完了する。現時点では完了しておらず、残りは下表が記録する。
 
-A v0.1 row is **conformant** only when every applicable column is `yes`.
-v0.1 is complete when all v0.1 rows are conformant. It is not complete today;
-the matrix is the record of what remains.
+## 機能の状態表
 
-## Feature matrix
-
-Columns: **Parse** and **Static** refer to AWHDL source (parser, checker);
-**Runtime** refers to the Rust runtime; **Tested** means an automated test
-exercises it. Values: `yes`, `no`, `partial`, `n/a`. **Evidence** names test
-functions; the profile test verifies that they exist and that any `yes` or
-`partial` implementation claim is backed by tests.
+列: **Parse** と **Static** は AWHDL ソース（parser、checker）、**Runtime** は Rust runtime、**Tested** は
+自動テストが実行することを表す。値は `yes`、`no`、`partial`、`n/a`。**Evidence** はテスト関数名であり、
+Profile テストがその実在と、`yes` / `partial` の実装主張がテストに裏付けられていることを検査する。
+表は日英で同一に保つ（機能名・値・根拠は識別子として英語のまま記す）。
 
 | Feature | Area | Profile | Parse | Static | Runtime | Tested | Evidence |
 |---|---|---|---|---|---|---|---|
@@ -84,33 +74,29 @@ functions; the profile test verifies that they exist and that any `yes` or
 | transaction / time-limited approval scopes | security | v0.2 | n/a | n/a | no | no | — |
 | automatic provider reconciliation lookup | runtime | v0.2 | n/a | n/a | no | no | — |
 
-## v0.1 gaps and known deviations
+## v0.1 の未達と既知の逸脱
 
-Open v0.1 rows, derived from the matrix:
+表から導かれる未達の v0.1 行:
 
-- **Event declarations and completion syntax:** semantics are fixed and
-  implemented, but source syntax is open (LANGUAGE_SPEC), so Parse is `no`.
-- **Static checks marked partial:** sensitivity members such as `x.changed` are
-  resolved by root name only; device kinds and route binding are checked at
-  compilation (runtime binding), not by the checker.
-- **parallel:** results commit together at the end of the delta cycle, but the
-  v0.1 runtime dispatches the calls one after another.
-- **agent device / human approval tests:** live model runs are not verified;
-  the HumanPort GUI answer path was verified manually once
-  (`live_approval_smoke`, 2026-09-23). Automated tests cover the adapters, the
-  MCP side and the engine flow with scripted devices, not the GUI click.
+- **Event 宣言と完了条件の構文:** 意味論は確定・実装済みだが、ソース構文が未定（LANGUAGE_SPEC）の
+  ため Parse は `no`。
+- **partial の静的検査:** `x.changed` などの感度メンバーは頭の名前だけで解決する。device の種類と
+  route への束縛は checker ではなくコンパイル時（runtime の束縛）に検査する。
+- **parallel:** 結果は delta cycle の終わりにまとめて反映されるが、v0.1 の runtime は呼び出しを
+  1つずつ順に行う。
+- **agent device と人間の承認のテスト:** 実モデルによる live 実行は未確認。HumanPort の GUI による
+  回答経路は手動で1回確認した（`live_approval_smoke`、2026-09-23）。自動テストは adapter、MCP 側、
+  および scripted device による engine の流れを対象とし、GUI のクリック操作は含まない。
 
-No approved deviations remain: the `open_data_acquisition` approval opt-out was
-removed on 2026-09-23 by the owner, so every external or destructive route
-requires action-bound human approval.
+承認済みの逸脱は残っていない。`open_data_acquisition` の承認除外は 2026-09-23 に所有者が撤廃したため、
+外部書き込み・破壊的操作の route はすべて action に bind した人間の承認を必要とする。
 
-## Rules for implementers and agents
+## 実装者と agent への規則
 
-1. Implement only v0.1 rows. Moving a row to v0.1 is a change to this document
-   plus a DESIGN_DECISIONS entry, made before the code.
-2. Update a row in the same change that alters its status. Record status here,
-   not in prose elsewhere; status reports may summarize but must not disagree.
-3. A `yes` or `partial` in Parse, Static or Runtime requires tests named in
-   Evidence. The test `profile_matrix_is_backed_by_existing_tests` enforces this.
-4. The LANGUAGE_SPEC and IMPLEMENTATION_GUIDE do not define scope. A construct
-   described there but absent or `v0.2` here is unsupported in v0.1.
+1. v0.1 の行だけを実装する。行を v0.1 に移すことは本書の変更と設計判断の記録を伴い、コードより先に行う。
+2. 状態を変える変更と同じ変更で該当行を更新する。状態は本書にだけ記録し、他の文書の文章では管理しない。
+   状態報告は要約してよいが、本書と食い違ってはならない。
+3. Parse・Static・Runtime に `yes` または `partial` と書くには、Evidence にテストが必要である。
+   テスト `profile_matrix_is_backed_by_existing_tests` がこれを強制し、日英の表が同一であることも検査する。
+4. LANGUAGE_SPEC と IMPLEMENTATION_GUIDE は範囲を定めない。そこに記述があっても、本書にない構成要素や
+   `v0.2` の構成要素は v0.1 では未対応である。

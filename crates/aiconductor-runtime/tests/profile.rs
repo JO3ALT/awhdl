@@ -1,4 +1,4 @@
-//! Keeps docs/PROFILE_v0.1.md honest: the matrix is the single status record,
+//! Keeps docs/PROFILE_v0.1_ja.md (normative) and its translation honest: the matrix is the single status record,
 //! so every implementation claim must name tests that exist in this workspace.
 use std::collections::BTreeSet;
 use std::fs;
@@ -19,17 +19,22 @@ fn workspace() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
-fn matrix() -> Vec<Row> {
-    let profile = fs::read_to_string(workspace().join("docs/PROFILE_v0.1.md")).unwrap();
-    let section = profile
-        .split("## Feature matrix")
-        .nth(1)
-        .expect("feature matrix section");
-    section
+/// The table lines of a profile document, from its header row to its end.
+fn table_lines(file: &str) -> Vec<String> {
+    let profile = fs::read_to_string(workspace().join("docs").join(file)).unwrap();
+    profile
         .lines()
         .skip_while(|line| !line.starts_with("| Feature"))
-        .skip(2)
         .take_while(|line| line.starts_with('|'))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// The Japanese profile is normative; its matrix is parsed.
+fn matrix() -> Vec<Row> {
+    table_lines("PROFILE_v0.1_ja.md")
+        .iter()
+        .skip(2)
         .map(|line| {
             let cells = line
                 .trim_matches('|')
@@ -88,6 +93,19 @@ fn test_names() -> BTreeSet<String> {
 
 #[test]
 fn profile_matrix_is_backed_by_existing_tests() {
+    // The English reference translation must carry the identical matrix.
+    let (japanese, english) = (
+        table_lines("PROFILE_v0.1_ja.md"),
+        table_lines("PROFILE_v0.1.md"),
+    );
+    assert_eq!(
+        japanese.len(),
+        english.len(),
+        "profile matrices differ in length"
+    );
+    for (ja, en) in japanese.iter().zip(&english) {
+        assert_eq!(ja, en, "Japanese and English profile matrices differ");
+    }
     let rows = matrix();
     let tests = test_names();
     assert!(rows.len() > 30, "matrix unexpectedly short");
