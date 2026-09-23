@@ -1,0 +1,198 @@
+# AIConductor capability grants (Phase 5).
+# One model for MCP tools, files, sandboxes, network and models. Anything not
+# granted here is denied. `subjects` are route names from routing-defaults.toml.
+# `effect_class` drives retry, approval and audit; a route's `effect_class` is the
+# ceiling for its grants. `file:` patterns are project-relative; `**` spans
+# directories. .runtime/secrets is intentionally never granted.
+
+schema_version = 1
+
+# --- Models -------------------------------------------------------------------
+
+[[grants]]
+id = "orchestrator_model"
+subjects = ["loop", "initial_coding"]
+action = "model.chat"
+resource = "model:qwen3.8-27b-q5km"
+effect_class = "pure"
+
+[[grants]]
+id = "small_fallback_model"
+subjects = ["loop", "initial_coding"]
+action = "model.chat"
+resource = "model:qwen3-4b-instruct-2507-q4km"
+effect_class = "pure"
+
+[[grants]]
+id = "polishing_models"
+subjects = ["japanese_polishing"]
+action = "model.chat"
+resource = "model:llm-jp-4-8b-thinking-bf16"
+effect_class = "pure"
+
+[[grants]]
+id = "polishing_fallback_model"
+subjects = ["japanese_polishing"]
+action = "model.chat"
+resource = "model:qwen3-4b-instruct-2507-q4km"
+effect_class = "pure"
+
+[[grants]]
+id = "vision_model"
+subjects = ["vision"]
+action = "model.chat"
+resource = "model:qwen3vl-8b-rocm"
+effect_class = "pure"
+
+# --- Proof, rules, filtering (read-only tools) ----------------------------------
+
+[[grants]]
+id = "lean_check"
+subjects = ["logic_proof"]
+action = "mcp.call"
+resource = "mcp:restricted_lean/*"
+effect_class = "read"
+
+[[grants]]
+id = "prolog_query"
+subjects = ["logic_rules"]
+action = "mcp.call"
+resource = "mcp:restricted_prolog/run_prolog*"
+effect_class = "read"
+
+[[grants]]
+id = "filter_tools"
+subjects = ["text_filtering"]
+action = "mcp.call"
+resource = "mcp:restricted_filter/*"
+effect_class = "read"
+
+# --- MATLAB ---------------------------------------------------------------------
+
+[[grants]]
+id = "matlab_execute"
+subjects = ["calculation_graphing"]
+action = "mcp.call"
+resource = "mcp:matlab_r2026a/*"
+effect_class = "local_write"
+
+# --- KDB: tool-level classes ----------------------------------------------------
+
+[[grants]]
+id = "kdb_inspect"
+subjects = ["table_analysis"]
+action = "mcp.call"
+resource = "mcp:restricted_kdb/get_*"
+effect_class = "read"
+
+[[grants]]
+id = "kdb_limits"
+subjects = ["table_analysis"]
+action = "mcp.call"
+resource = "mcp:restricted_kdb/list_server_limits"
+effect_class = "read"
+
+[[grants]]
+id = "kdb_load"
+subjects = ["table_analysis"]
+action = "mcp.call"
+resource = "mcp:restricted_kdb/load_*"
+effect_class = "local_write"
+
+[[grants]]
+id = "kdb_save"
+subjects = ["table_analysis"]
+action = "mcp.call"
+resource = "mcp:restricted_kdb/save_*"
+effect_class = "local_write"
+
+[[grants]]
+id = "kdb_prune"
+subjects = ["table_analysis"]
+action = "mcp.call"
+resource = "mcp:restricted_kdb/prune_state"
+effect_class = "local_write"
+
+[[grants]]
+id = "kdb_query"
+subjects = ["table_analysis"]
+action = "mcp.call"
+resource = "mcp:restricted_kdb/run_q"
+effect_class = "local_write"
+
+# --- Project files passed to proof/rules/MATLAB tools ----------------------------
+
+[[grants]]
+id = "examples_read"
+subjects = ["logic_proof", "logic_rules", "calculation_graphing"]
+action = "file.read"
+resource = "file:examples/**"
+effect_class = "read"
+
+[[grants]]
+id = "runtime_runs_read"
+subjects = ["logic_proof", "logic_rules", "calculation_graphing"]
+action = "file.read"
+resource = "file:.runtime/runs/**"
+effect_class = "read"
+
+[[grants]]
+id = "runtime_mcp_read"
+subjects = ["logic_proof", "logic_rules", "calculation_graphing"]
+action = "file.read"
+resource = "file:.runtime/mcp/**"
+effect_class = "read"
+
+[[grants]]
+id = "runtime_open_data_read"
+subjects = ["logic_proof", "logic_rules", "calculation_graphing"]
+action = "file.read"
+resource = "file:.runtime/open-data/**"
+effect_class = "read"
+
+[[grants]]
+id = "runtime_full_loop_read"
+subjects = ["logic_proof", "logic_rules", "calculation_graphing"]
+action = "file.read"
+resource = "file:.runtime/full-loop/**"
+effect_class = "read"
+
+# --- Codex sessions --------------------------------------------------------------
+
+[[grants]]
+id = "codex_reasoning_session"
+subjects = ["deep_reasoning"]
+action = "mcp.call"
+resource = "mcp:codex_cli/codex"
+effect_class = "read"
+
+# Codex read-only sandbox can read the whole host filesystem.
+[[grants]]
+id = "codex_read_only_sandbox"
+subjects = ["deep_reasoning"]
+action = "sandbox.read_only"
+resource = "host:local"
+effect_class = "read"
+
+[[grants]]
+id = "codex_open_data_session"
+subjects = ["open_data_acquisition"]
+action = "mcp.call"
+resource = "mcp:codex_cli/codex"
+effect_class = "external_write"
+
+# Broad by necessity: danger-full-access and unrestricted outbound network.
+# Codex cannot restrict hosts, so this is recorded rather than hidden.
+[[grants]]
+id = "codex_full_access_sandbox"
+subjects = ["open_data_acquisition"]
+action = "sandbox.full_access"
+resource = "host:local"
+effect_class = "external_write"
+
+[[grants]]
+id = "codex_any_host"
+subjects = ["open_data_acquisition"]
+action = "network.connect"
+resource = "host:*"
+effect_class = "external_write"

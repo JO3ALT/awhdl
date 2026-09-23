@@ -1,7 +1,14 @@
 use crate::adapters::{AdapterInput, normalize_result, prepare_call};
+use crate::approval::ApprovalDecision;
+use crate::approver::{Approver, HumanPortApprover};
 use crate::audit::{RunState, RunStore};
 use crate::budget::Budget;
+use crate::capability::CapabilityRequest;
+use crate::completion::{CompletionFacts, CompletionPolicy, CompletionStatus, evaluate};
 use crate::config::{ActionConfig, ProjectConfig};
+use crate::design::{BoundDevice, DesignOutcome, DesignRun, Dispatcher, compile};
+use crate::effect::EffectDecision;
+use crate::effect::EffectRequest;
 use crate::llm::LlmClient;
 use crate::mcp::McpClient;
 use crate::model::ModelManager;
@@ -50,16 +57,152 @@ pub struct Engine {
     config: ProjectConfig,
     models: ModelManager,
     llm: LlmClient,
+    /// Trusted human approval channel; `None` makes approval-bound writes fail closed.
+    approver: Option<Box<dyn Approver>>,
 }
 
 impl Engine {
     pub fn new(config: ProjectConfig) -> Result<Self> {
         let timeout = config.runtime.loop_limits.device_timeout_sec;
+        let approver = config
+            .runtime
+            .approval
+            .as_ref()
+            .map(|settings| {
+                HumanPortApprover::new(&config, settings).map(|a| Box::new(a) as Box<dyn Approver>)
+            })
+            .transpose()?;
         Ok(Self {
             config,
             models: ModelManager::new()?,
             llm: LlmClient::new(timeout)?,
+            approver,
         })
+    }
+
+    /// Ask the human for an approval bound to this exact Effect before dispatch.
+    /// A denial or failure leaves the Effect NOT_STARTED and the provider uncalled.
+    async fn obtain_approval(
+        &self,
+        audit: &mut RunStore,
+        budget: &Budget,
+        request: &EffectRequest,
+        parameters: &Value,
+    ) -> Result<()> {
+        let Some(approver) = &self.approver else {
+            return Ok(()); // start_effect fails closed without a granted approval
+        };
+        let effect_id = match audit.reserve_effect(request)? {
+            EffectDecision::Dispatch { effect_id, .. } => effect_id,
+            EffectDecision::Cached { .. } => return Ok(()),
+        };
+        if audit
+            .execution()
+            .has_granted_approval(effect_id, chrono::Utc::now())
+        {
+            return Ok(());
+        }
+        let ttl = self
+            .config
+            .runtime
+            .approval
+            .as_ref()
+            .map_or(600, |settings| settings.ttl_sec);
+        let pending = audit.request_approval(
+            effect_id,
+            parameters,
+            chrono::Duration::seconds(ttl),
+            &budget.usage,
+        )?;
+        let answer = approver.ask(&pending).await?;
+        audit.decide_approval(
+            pending.approval_id,
+            &answer.echoed_action_hash,
+            answer.decision,
+            &budget.usage,
+        )?;
+        anyhow::ensure!(
+            answer.decision == ApprovalDecision::Grant,
+            "human denied approval for {}",
+            request.action()
+        );
+        Ok(())
+    }
+
+    /// Compile an AWHDL design and run it. Device calls use the same route
+    /// execution as planner dispatch; the planner is not involved.
+    pub async fn run_design(
+        &self,
+        source: &str,
+        inputs: BTreeMap<String, Value>,
+    ) -> Result<DesignOutcome> {
+        let design = compile(source, &self.config)?;
+        let mut audit = RunStore::create(&self.config.root, &self.config.runtime.run_root, source)?;
+        let mut budget = Budget::new(self.config.runtime.loop_limits.clone());
+        budget.tighten(
+            design.limits.iterations,
+            design.limits.tool_calls,
+            design.limits.model_calls,
+        );
+        audit.event(
+            "design_started",
+            json!({
+                "entity": design.entity,
+                "architecture": design.architecture,
+                "devices": design.devices.values().map(|d| json!({"device": d.name, "route": d.route, "location": d.location})).collect::<Vec<_>>(),
+                "inputs": inputs.keys().collect::<Vec<_>>(),
+            }),
+            &budget.usage,
+        )?;
+        let outcome = {
+            let dispatcher = EngineDispatcher {
+                engine: self,
+                audit: &mut audit,
+                budget: &mut budget,
+                source,
+            };
+            let mut run = DesignRun::new(&design, dispatcher);
+            run.run(inputs).await
+        };
+        let outcome = outcome.and_then(|outcome| {
+            // Completion still requires every Effect to be resolved.
+            let report = evaluate(
+                &CompletionPolicy::default(),
+                &CompletionFacts {
+                    actions: &[],
+                    execution: audit.execution(),
+                    structured: &BTreeMap::new(),
+                    planner_claim: false,
+                },
+            )?;
+            anyhow::ensure!(
+                report.status == CompletionStatus::Complete,
+                "design run {:?}: {}",
+                report.status,
+                report.reason.unwrap_or_default()
+            );
+            Ok(outcome)
+        });
+        match &outcome {
+            Ok(result) => {
+                audit.write_result(&serde_json::to_string_pretty(&result.outputs)?)?;
+                audit.event(
+                    "design_completed",
+                    json!({"status": result.status, "reason": result.reason, "delta_cycles": result.delta_cycles, "device_calls": result.device_calls}),
+                    &budget.usage,
+                )?;
+                checkpoint(&audit, "completed", None, &budget)?;
+            }
+            Err(error) => {
+                audit.event(
+                    "run_failed",
+                    json!({"error": format!("{error:#}")}),
+                    &budget.usage,
+                )?;
+                checkpoint(&audit, "failed", None, &budget)?;
+            }
+        }
+        outcome
     }
 
     pub async fn run(&self, prompt: &str) -> Result<String> {
@@ -94,6 +237,14 @@ impl Engine {
                 workflow.as_ref().map(|(_, steps)| steps.as_slice()),
             );
             let mut successful_mcp_calls = BTreeMap::<String, String>::new();
+            let completion_policy = self
+                .config
+                .routes
+                .select_workflow(prompt)
+                .map(|(_, workflow)| workflow.completion.clone())
+                .unwrap_or_else(|| self.config.routes.completion.clone());
+            // Typed adapter output per action: the only device data completion reads.
+            let mut structured = BTreeMap::<String, Value>::new();
             loop {
                 budget.iteration()?;
                 checkpoint(&audit, "planning", None, &budget)?;
@@ -201,6 +352,14 @@ impl Engine {
                         match result {
                             Ok(result) => {
                                 state_machine.succeed(&action)?;
+                                if route.kind == "mcp"
+                                    && let Some(value) = serde_json::from_str::<Value>(&result)
+                                        .ok()
+                                        .and_then(|output| output.get("structured").cloned())
+                                        .filter(|value| !value.is_null())
+                                {
+                                    structured.insert(action.clone(), value);
+                                }
                                 audit.event(
                                     "action_completed",
                                     json!({"action": action, "result_bytes": result.len()}),
@@ -243,6 +402,42 @@ impl Engine {
                             });
                             continue;
                         }
+                        // The planner's claim only requests this evaluation.
+                        let snapshot = state_machine.snapshot();
+                        let report = evaluate(
+                            &completion_policy,
+                            &CompletionFacts {
+                                actions: &snapshot,
+                                execution: audit.execution(),
+                                structured: &structured,
+                                planner_claim: true,
+                            },
+                        )?;
+                        audit.event(
+                            "completion_evaluated",
+                            serde_json::to_value(&report)?,
+                            &budget.usage,
+                        )?;
+                        match report.status {
+                            CompletionStatus::Complete | CompletionStatus::RequiresReview => {}
+                            CompletionStatus::Incomplete => {
+                                observations.push(Observation {
+                                    action: "complete".to_owned(),
+                                    ok: false,
+                                    result: format!(
+                                        "COMPLETION_REJECTED: unmet hard conditions {:?}; unmet soft conditions {:?}. Dispatch the actions these require before completing.",
+                                        report.unmet_hard, report.unmet_soft
+                                    ),
+                                });
+                                continue;
+                            }
+                            CompletionStatus::Blocked | CompletionStatus::Failed => bail!(
+                                "completion {:?}: {}; unmet hard conditions {:?}",
+                                report.status,
+                                report.reason.as_deref().unwrap_or("unspecified"),
+                                report.unmet_hard
+                            ),
+                        }
                         if polish_japanese
                             && let Some(action_name) = self
                                 .config
@@ -282,17 +477,26 @@ impl Engine {
                                 }
                             }
                         }
+                        let review = report.status == CompletionStatus::RequiresReview;
+                        if review {
+                            answer = format!(
+                                "[REQUIRES_REVIEW] unmet soft conditions: {:?}\n\n{answer}",
+                                report.unmet_soft
+                            );
+                        }
                         audit.write_result(&answer)?;
                         audit.event(
                             "run_completed",
                             json!({
                                 "result_bytes": answer.len(),
                                 "executed_actions": state_machine.succeeded_actions(),
-                                "polished": polish_japanese
+                                "polished": polish_japanese,
+                                "completion": report.status,
                             }),
                             &budget.usage,
                         )?;
-                        checkpoint(&audit, "completed", None, &budget)?;
+                        let phase = if review { "requires_review" } else { "completed" };
+                        checkpoint(&audit, phase, None, &budget)?;
                         return Ok(answer);
                     }
                 }
@@ -316,6 +520,10 @@ impl Engine {
         audit: &mut RunStore,
     ) -> Result<Decision> {
         let controller_id = &self.config.models.default_orchestrator;
+        self.config.authorize_route(
+            &self.config.routes.default_action,
+            &CapabilityRequest::new("model.chat", format!("model:{controller_id}")),
+        )?;
         let profile = self
             .models
             .ensure(controller_id, &self.config, budget, audit)
@@ -338,16 +546,20 @@ impl Engine {
                 json!({"attempt": attempt, "input_bytes": user.len()}),
                 &budget.usage,
             )?;
-            let raw = self
-                .llm
-                .chat_json(
-                    &profile,
-                    &system,
-                    &user,
-                    self.config.runtime.planner.temperature,
-                    &eligible_actions,
+            let raw = audit
+                .invoke(
+                    &format!("planner:{}", budget.usage.iterations),
+                    &budget.usage,
+                    self.llm.chat_json(
+                        &profile,
+                        &system,
+                        &user,
+                        self.config.runtime.planner.temperature,
+                        &eligible_actions,
+                    ),
                 )
-                .await?;
+                .await?
+                .payload;
             match parse_decision(&raw) {
                 Ok(decision) => {
                     audit.event(
@@ -415,6 +627,7 @@ Rules:
 - Treat structured adapter output as immutable facts. Copy numeric values exactly and never rescale them.
 - Do not repeat a successful action unless its result shows another pass is needed.
 - A failed observation may be retried with corrected input or routed to a fallback.
+- The runtime checks completion against required conditions. A COMPLETION_REJECTED observation lists what is missing; dispatch those actions first.
 - Complete when the operator's request is answered. Set polish_japanese true only for Japanese prose that benefits from final editing.
 
 Available actions:
@@ -445,6 +658,13 @@ Available actions:
                 candidates.extend(route.fallback.iter().map(String::as_str));
                 let mut last_error = None;
                 for profile_id in candidates {
+                    if let Err(error) = self.config.authorize_route(
+                        action_name,
+                        &CapabilityRequest::new("model.chat", format!("model:{profile_id}")),
+                    ) {
+                        last_error = Some(error);
+                        continue;
+                    }
                     let profile = match self
                         .models
                         .ensure(profile_id, &self.config, budget, audit)
@@ -462,8 +682,15 @@ Available actions:
                     } else {
                         &route.description
                     };
-                    match self.llm.chat(&profile, system, input, 0.2).await {
-                        Ok(value) => return Ok(value),
+                    match audit
+                        .invoke(
+                            &format!("action:{action_name}"),
+                            &budget.usage,
+                            self.llm.chat(&profile, system, input, 0.2),
+                        )
+                        .await
+                    {
+                        Ok(value) => return Ok(value.payload),
                         Err(error) => last_error = Some(error),
                     }
                 }
@@ -516,21 +743,95 @@ Available actions:
                     }),
                     &budget.usage,
                 )?;
+                let authorization = self.config.authorize_route(
+                    action_name,
+                    &CapabilityRequest::new(
+                        "mcp.call",
+                        format!("mcp:{server_name}/{}", prepared.tool),
+                    ),
+                )?;
+                audit.event(
+                    "capability_authorized",
+                    json!({
+                        "subject": action_name, "action": "mcp.call",
+                        "resource": format!("mcp:{server_name}/{}", prepared.tool),
+                        "capability": authorization.handle,
+                        "effect_class": authorization.effect_class,
+                    }),
+                    &budget.usage,
+                )?;
                 budget.mcp_call()?;
-                let result = McpClient::call_tool(
-                    &self.config,
-                    server,
-                    &prepared.tool,
-                    prepared.arguments.clone(),
-                )
-                .await?;
-                let result = normalize_result(
-                    prepared.adapter,
-                    &prepared.tool,
-                    &result,
-                    self.config.runtime.planner.max_observation_bytes,
-                )?
-                .for_planner()?;
+                let operation = format!("action:{action_name}");
+                // Retry, approval and journaling follow the authorizing capability.
+                let class = authorization.effect_class;
+                let result = if class.is_write() {
+                    if let Some(field) = &route.idempotency_argument {
+                        let args = prepared
+                            .arguments
+                            .as_object()
+                            .context("MCP arguments must be an object")?;
+                        anyhow::ensure!(
+                            !args.contains_key(field),
+                            "planner cannot supply idempotency key"
+                        );
+                    }
+                    let request = EffectRequest::new(
+                        &operation,
+                        action_name,
+                        &format!("{server_name}:{}", prepared.tool),
+                        &prepared.arguments,
+                        class,
+                        route.idempotency_argument.clone(),
+                        route.manual_reconciliation,
+                    )?
+                    // No approval adapter is wired yet, so a required approval fails closed.
+                    .with_approval(route.requires_human_approval_for(class))?
+                    .with_capability(&authorization.handle)?;
+                    if request.requires_approval() {
+                        self.obtain_approval(audit, budget, &request, &prepared.arguments)
+                            .await?;
+                    }
+                    let mut arguments = prepared.arguments.clone();
+                    let idempotency_argument = route.idempotency_argument.clone();
+                    let tool_name = prepared.tool.clone();
+                    let adapter = prepared.adapter;
+                    let limit = self.config.runtime.planner.max_observation_bytes;
+                    audit
+                        .invoke_effect(request, &budget.usage, move |key| async move {
+                            if let Some(field) = idempotency_argument {
+                                let object = arguments
+                                    .as_object_mut()
+                                    .context("MCP arguments must be an object")?;
+                                object.insert(field, Value::String(key));
+                            }
+                            let raw =
+                                McpClient::call_tool(&self.config, server, &tool_name, arguments)
+                                    .await?;
+                            normalize_result(adapter, &tool_name, &raw, limit)?.for_planner()
+                        })
+                        .await?
+                } else {
+                    let raw = audit
+                        .invoke(
+                            &operation,
+                            &budget.usage,
+                            McpClient::call_tool(
+                                &self.config,
+                                server,
+                                &prepared.tool,
+                                prepared.arguments.clone(),
+                            ),
+                        )
+                        .await?
+                        .payload;
+                    normalize_result(
+                        prepared.adapter,
+                        &prepared.tool,
+                        &raw,
+                        self.config.runtime.planner.max_observation_bytes,
+                    )?
+                    .for_planner()?
+                };
                 successful_mcp_calls.insert(fingerprint, result.clone());
                 Ok(result)
             }
@@ -542,6 +843,7 @@ Available actions:
 fn checkpoint(audit: &RunStore, phase: &str, action: Option<&str>, budget: &Budget) -> Result<()> {
     audit.checkpoint(&RunState {
         run_id: audit.id(),
+        execution: audit.execution().clone(),
         phase: phase.to_owned(),
         iteration: budget.usage.iterations,
         last_action: action.map(str::to_owned),
@@ -591,9 +893,171 @@ fn truncate_owned(mut value: String, max: usize) -> String {
     value
 }
 
+/// Runs AWHDL device calls through the engine's route execution.
+struct EngineDispatcher<'e> {
+    engine: &'e Engine,
+    audit: &'e mut RunStore,
+    budget: &'e mut Budget,
+    source: &'e str,
+}
+
+#[async_trait::async_trait(?Send)]
+impl Dispatcher for EngineDispatcher<'_> {
+    async fn call(
+        &mut self,
+        device: &BoundDevice,
+        method: &str,
+        arguments: &[Value],
+    ) -> Result<Value> {
+        let route = self
+            .engine
+            .config
+            .action(&device.route)
+            .with_context(|| format!("unknown route {}", device.route))?
+            .clone();
+        // One string argument is the device input; one object argument is the
+        // typed MCP argument map; anything else is passed as JSON text.
+        let input = match arguments {
+            [] => String::new(),
+            [Value::String(text)] => text.clone(),
+            other => serde_json::to_string(other)?,
+        };
+        let mcp_arguments = match arguments {
+            [Value::Object(map)] => Value::Object(map.clone()),
+            _ => Value::Object(Map::new()),
+        };
+        let requested_tool = (route.kind == "mcp"
+            && (route.tool.as_deref() == Some(method)
+                || route.preferred_tools.iter().any(|tool| tool == method)))
+        .then_some(method);
+        // Planner duplicate suppression does not apply: a design may repeat a call.
+        let mut no_suppression = BTreeMap::new();
+        let text = self
+            .engine
+            .execute_action(
+                ActionInvocation {
+                    name: &device.route,
+                    route: &route,
+                    input: &input,
+                    source_instruction: self.source,
+                    requested_tool,
+                    arguments: mcp_arguments,
+                },
+                self.budget,
+                self.audit,
+                &mut no_suppression,
+            )
+            .await?;
+        Ok(serde_json::from_str(&text).unwrap_or(Value::String(text)))
+    }
+
+    fn record(&mut self, event: &str, data: Value) -> Result<()> {
+        self.audit.event(event, data, &self.budget.usage)
+    }
+
+    fn delta(&mut self) -> Result<()> {
+        self.budget.iteration()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::approval::ApprovalRequest;
+    use crate::approver::HumanAnswer;
+    use crate::effect::{EffectClass, EffectState};
+
+    struct ScriptedHuman {
+        decision: ApprovalDecision,
+        tamper_hash: bool,
+    }
+
+    #[async_trait::async_trait(?Send)]
+    impl Approver for ScriptedHuman {
+        async fn ask(&self, request: &ApprovalRequest) -> Result<HumanAnswer> {
+            Ok(HumanAnswer {
+                decision: self.decision,
+                echoed_action_hash: if self.tamper_hash {
+                    "0".repeat(64)
+                } else {
+                    request.action_hash.clone()
+                },
+            })
+        }
+    }
+
+    fn engine(human: Option<ScriptedHuman>) -> Engine {
+        let root = crate::test_support::project_root();
+        let mut engine = Engine::new(ProjectConfig::load(root).unwrap()).unwrap();
+        engine.approver = human.map(|h| Box::new(h) as Box<dyn Approver>);
+        engine
+    }
+
+    #[tokio::test]
+    async fn approval_bound_writes_ask_the_human_before_dispatch() {
+        let parameters = json!({"repository": "lab/repo", "commit": "abc"});
+        let request = || {
+            EffectRequest::new(
+                "action:push",
+                "push",
+                "git:push",
+                &parameters,
+                EffectClass::ExternalWrite,
+                None,
+                true,
+            )
+            .unwrap()
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let budget = Budget::new(
+            ProjectConfig::load(crate::test_support::project_root())
+                .unwrap()
+                .runtime
+                .loop_limits,
+        );
+        for (human, expect_dispatch) in [
+            (
+                Some(ScriptedHuman {
+                    decision: ApprovalDecision::Grant,
+                    tamper_hash: false,
+                }),
+                true,
+            ),
+            (
+                Some(ScriptedHuman {
+                    decision: ApprovalDecision::Deny,
+                    tamper_hash: false,
+                }),
+                false,
+            ),
+            (
+                Some(ScriptedHuman {
+                    decision: ApprovalDecision::Grant,
+                    tamper_hash: true,
+                }),
+                false,
+            ),
+            (None, false),
+        ] {
+            let engine = engine(human);
+            let mut audit = RunStore::create(dir.path(), "runs", "t").unwrap();
+            let asked = engine
+                .obtain_approval(&mut audit, &budget, &request(), &parameters)
+                .await;
+            let sent = audit
+                .invoke_effect(request(), &budget.usage, |_| async {
+                    Ok("pushed".to_owned())
+                })
+                .await;
+            assert_eq!(sent.is_ok(), expect_dispatch, "{asked:?} {sent:?}");
+            let effect = audit.execution().effects().next().unwrap();
+            if !expect_dispatch {
+                // Denied, tampered or unanswered: nothing reached the provider.
+                assert_eq!(effect.state, EffectState::NotStarted);
+            }
+        }
+    }
 
     #[test]
     fn parses_plain_and_fenced_decisions() {
@@ -607,6 +1071,17 @@ mod tests {
             parse_decision(&fenced).unwrap(),
             Decision::Complete { .. }
         ));
+    }
+
+    #[test]
+    fn planner_cannot_assert_completion_facts() {
+        for injected in [
+            r#"{"type":"complete","answer":"ok","hard_conditions_met":true}"#,
+            r#"{"type":"complete","answer":"ok","status":"complete"}"#,
+            r#"{"type":"complete","answer":"ok","structured":{"proof":{"ok":true}}}"#,
+        ] {
+            assert!(parse_decision(injected).is_err(), "{injected}");
+        }
     }
 
     #[test]

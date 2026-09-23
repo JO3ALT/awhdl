@@ -227,3 +227,66 @@ cancelは新規scheduleを停止し、cancel可能なcallとsandbox childを終�
 ## 38. v0.2 MVP境界
 
 必須対象はparser/AST、静的classification検査、local/cloud device、JSON IR、Tokio event runtime、MCP stdio、timer/timeout、bounded loop、parallel validation、audit、一時workspace、cloud-egress authorization、cvimから利用可能なCLIです。full DLP、distributed runtime、Kubernetes、GUI、完全な時相論理、本番microVM、rich cvim UIは延期します。
+
+## Phase 1 execution identity addendum（2026-09-23）
+
+実行 identity の規範は [Runtime semantics](docs/RUNTIME_SPEC.md) と
+[IR specification](docs/IR_SPEC.md) に定義する。この範囲では本追補を優先する。
+統合ランタイムに invocation / generation / correlation、checkpoint 復元、
+generation-aware barrier の API を実装済み。AWHDL compiler は Milestone 1 のままで、
+言語の compile/run、signal/event scheduler、CLI resume の実装完了を意味しない。
+[移行と実装境界](docs/MIGRATION_PHASE_1.md) を参照。
+
+## Phase 2 Value / Event / Invocation 分離（2026-09-23）
+
+Value は最新値、Event は一回の通知、Invocation は呼び出しの状態と結果として区別する。
+同値代入は changed を発生させず、同一 payload の別 Event はそれぞれ消費する。
+実行意味論は [Runtime spec](docs/RUNTIME_SPEC.md)、形式 v2 は
+[IR spec](docs/IR_SPEC.md) を規範とし、この範囲では両文書を優先する。
+永続化した消費記録で再配送を防ぐが、外部副作用の exactly-once は保証しない。
+新しい感度リスト構文・delta-cycle 実行は未実装。
+[移行・実装境界](docs/MIGRATION_PHASE_2.md) を参照。
+
+## Phase 3 Effect / Retry / Idempotency（2026-09-23）
+
+外部書き込みは実行前に Effect を記録し、結果が不明なときは `UNCERTAIN` として
+自動再送を止める。冪等キーは runtime が作り、同一 action instance の再試行で維持する。
+適用範囲の規範は [Runtime spec](docs/RUNTIME_SPEC.md) と
+[IR spec](docs/IR_SPEC.md) とし、本追補がその範囲で優先する。
+現在の形式は checkpoint v3。照合 API は実装したが、provider の自動照会・
+CLI resume は未実装。[移行・制約](docs/MIGRATION_PHASE_3.md) を参照。
+
+## Phase 4 承認の Action Instance への bind（2026-09-23）
+
+人間の承認は真偽値ではなく、1つの Effect instance の正規化記述（run・generation・
+effect・action・capability・resource・class・content hash）の SHA-256 に bind する。
+承認は1回限り・有効期限付きで、Effect を `STARTED` にする遷移と同じ checkpoint で消費する。
+external / destructive の書き込みは既定で承認必須。scope は `single_action` のみ受け付ける。
+現在の形式は checkpoint v4。承認 adapter（HumanPort）は未接続のため、承認必須の
+action は fail closed となる。[移行・制約](docs/MIGRATION_PHASE_4.md) を参照。
+
+## Phase 5 Capability model（2026-09-23）
+
+tool・ファイル・sandbox・network・model の権限を1つのパラメータ付き capability model
+（`config/capabilities.toml`、既定は拒否）に統合し、`authorize(subject, request)` で
+一元的に判定する。認可した capability の effect class が tool 単位で journal・retry・
+承認を決め、Effect と承認はその handle に bind する。planner が渡すファイルパスは
+正規化し、許可されたプロジェクト内パスに限る。現在の形式は checkpoint v5。
+分類に基づく外部送信制御と credential broker は未実装。
+[移行・制約](docs/MIGRATION_PHASE_5.md) を参照。
+
+## Phase 6 Hard / Soft completion（2026-09-23）
+
+planner の完了宣言は評価の依頼にすぎない。runtime が state machine・Effect journal・
+typed adapter の構造化出力から `COMPLETE` / `INCOMPLETE` / `BLOCKED` / `FAILED` /
+`REQUIRES_REVIEW` を決める。hard 条件は決定的なものに限り、model 出力と planner の宣言は
+soft のみ。external / destructive の step を含む workflow は safety-critical とし hard 条件を
+明示する。AWHDL の `completion when hard/soft` 構文は未解析で、条件は設定で与える。
+[移行・制約](docs/MIGRATION_PHASE_6.md) を参照。
+
+## Phase 7 v0.1 Profile（2026-09-23）
+
+v0.1 の実装範囲と機能の状態は [PROFILE_v0.1](docs/PROFILE_v0.1.md) だけが定める。
+本仕様は目標とする言語・システムを記述し、Profile が v0.1 と定めていない構文・機能は
+v0.1 では未対応とする。規範文書は `docs/` の LANGUAGE_SPEC・RUNTIME_SPEC・SECURITY_SPEC・
+IR_SPEC・PROFILE_v0.1 で、矛盾時は Profile、次にそれらの仕様が優先する。

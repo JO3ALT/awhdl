@@ -76,16 +76,19 @@ cargo run -p conductor-cli -- check examples/hello.awhdl --output json
 | 公開前チェックリスト | [日本語](docs/PUBLICATION_CHECKLIST_ja.md) | [English](docs/PUBLICATION_CHECKLIST.md) |
 | cvimの責務境界 | [日本語](cvim/README_ja.md) | [English](cvim/README.md) |
 | 実装ガイド | [日本語](IMPLEMENTATION_GUIDE_v0.2_ja.md) | [English](IMPLEMENTATION_GUIDE_v0.2.md) |
+| v0.1 Profile（範囲と状態の正本） | — | [English](docs/PROFILE_v0.1.md) |
+| 言語・Runtime・Security・IR 仕様（規範） | — | [LANGUAGE](docs/LANGUAGE_SPEC.md)・[RUNTIME](docs/RUNTIME_SPEC.md)・[SECURITY](docs/SECURITY_SPEC.md)・[IR](docs/IR_SPEC.md) |
+| 仕様整理の設計判断 | [日本語](docs/REFINEMENT_DECISIONS_ja.md) | — |
 
-日本語版を規範文書（正本）とし、英語版は理解と国際的な共有を助けるための参考訳とします。両者に差異がある場合は日本語版が優先されます。現在実際に利用できる機能については、仕様書ではなく[実装状況](docs/IMPLEMENTATION_STATUS_ja.md)を参照してください。
+日本語版を規範文書（正本）とし、英語版は理解と国際的な共有を助けるための参考訳とします。両者に差異がある場合は日本語版が優先されます。v0.1 の実装範囲と各機能の状態は [PROFILE_v0.1](docs/PROFILE_v0.1.md) の表だけが定めます（テストでコードとの対応を検査）。[実装状況](docs/IMPLEMENTATION_STATUS_ja.md)はその要約です。仕様整理で追加した規範文書（Profile・LANGUAGE/RUNTIME/SECURITY/IR_SPEC）は現在英語のみで、日本語版は未作成です。
 
 ## ワークスペース
 
 - `awhdl-ast`: AST定義とソース上のバイト範囲
 - `awhdl-parser`: Pest文法とAST構築
-- `awhdl-checker`: Milestone 1の構造・名前検査
+- `awhdl-checker`: 構造・情報フロー・Profile の静的検査
 - `conductor-cli`: `aic`コマンドラインフロントエンド
-- `aiconductor-runtime`: AWHDLコンパイラパイプラインとは分離された、非規範的な統合プロトタイプ
+- `aiconductor-runtime`: AWHDL 設計のコンパイルと delta cycle 実行、Effect・承認・capability・完了判定を持つ runtime（`aiconductor run-design`）
 
 ## 開発時の検査
 
@@ -97,7 +100,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 ## 現在の制限
 
-Milestone 1では、機密区分ラティスの強制、情報フロー解析、JSON IR生成、AWHDL実行、タイマー、並列ブロック、クラウドAPI、サンドボックスを実装していません。未対応構文は診断を出して拒否し、黙って受理しません。
+未達の項目は [PROFILE_v0.1](docs/PROFILE_v0.1.md) の「v0.1 gaps」を参照してください。runtime のテストは同梱の匿名化した設定（`crates/aiconductor-runtime/tests/fixtures/project`）で動き、外部の LLM・MCP・人間は不要です。実機の device を使う確認は `examples/` の live 例で行います。未対応構文は診断を出して拒否し、黙って受理しません。
 
 ## ライセンス
 

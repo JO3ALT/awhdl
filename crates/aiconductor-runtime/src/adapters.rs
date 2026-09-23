@@ -1,3 +1,4 @@
+use crate::capability::{CapabilityRequest, file_resource};
 use crate::config::{ActionConfig, McpAdapterKind as AdapterKind, ProjectConfig};
 use crate::mcp::summarize_content;
 use anyhow::{Context, Result, bail};
@@ -12,7 +13,6 @@ impl AdapterKind {
         }
         match tool {
             "codex" => Ok(Self::Codex),
-            "claude_review" | "review_code" => Ok(Self::ClaudeReview),
             "lean" | "check_lean_code" | "check_lean_file" | "get_lean_environment" => {
                 Ok(Self::Lean)
             }
@@ -59,16 +59,19 @@ impl NormalizedMcpOutput {
 }
 
 pub fn prepare_call(config: &ProjectConfig, source: AdapterInput<'_>) -> Result<PreparedMcpCall> {
-    let tool = resolve_tool(source.route, source.requested_tool, &source)?;
+    let mut tool = resolve_tool(source.route, source.requested_tool, &source)?;
     let adapter = AdapterKind::resolve(source.route, &tool)?;
     let mut arguments = source.arguments.as_object().cloned().unwrap_or_default();
 
     match adapter {
         AdapterKind::Codex => prepare_codex(config, &source, &mut arguments)?,
-        AdapterKind::ClaudeReview => prepare_claude_review(&source, &mut arguments),
         AdapterKind::Lean => prepare_lean(config, &tool, &source, &mut arguments)?,
         AdapterKind::Prolog => prepare_prolog(config, &tool, &source, &mut arguments)?,
-        AdapterKind::Matlab => prepare_matlab(config, &tool, &source, &mut arguments)?,
+        AdapterKind::Matlab => {
+            if let Some(rewritten) = prepare_matlab(config, &tool, &source, &mut arguments)? {
+                tool = rewritten;
+            }
+        }
         AdapterKind::Passthrough => {}
     }
 
@@ -160,11 +163,32 @@ fn resolve_tool(
         .context("MCP action has no preferred tool")
 }
 
+/// Codex sandbox and network settings expressed as capability requests.
+/// Codex cannot restrict outbound hosts, so network access is `host:*`; full
+/// access always includes the network, whatever `network_access` says.
+pub fn codex_capability_requests(route: &ActionConfig) -> Result<Vec<CapabilityRequest>> {
+    let sandbox = route.sandbox.as_deref().unwrap_or("read-only");
+    let action = match sandbox {
+        "read-only" => "sandbox.read_only",
+        "workspace-write" => "sandbox.workspace_write",
+        "danger-full-access" => "sandbox.full_access",
+        other => bail!("unknown Codex sandbox {other}"),
+    };
+    let mut requests = vec![CapabilityRequest::new(action, "host:local")];
+    if sandbox == "danger-full-access" || (route.network_access && sandbox == "workspace-write") {
+        requests.push(CapabilityRequest::new("network.connect", "host:*"));
+    }
+    Ok(requests)
+}
+
 fn prepare_codex(
     config: &ProjectConfig,
     source: &AdapterInput<'_>,
     object: &mut Map<String, Value>,
 ) -> Result<()> {
+    for request in codex_capability_requests(source.route)? {
+        config.authorize_route(source.action, &request)?;
+    }
     object.insert(
         "prompt".to_owned(),
         Value::String(effective_input(source).to_owned()),
@@ -215,15 +239,6 @@ fn prepare_codex(
     Ok(())
 }
 
-fn prepare_claude_review(source: &AdapterInput<'_>, object: &mut Map<String, Value>) {
-    object
-        .entry("instructions".to_owned())
-        .or_insert_with(|| Value::String(effective_input(source).to_owned()));
-    object
-        .entry("paths".to_owned())
-        .or_insert_with(|| Value::Array(Vec::new()));
-}
-
 fn effective_input<'a>(source: &'a AdapterInput<'_>) -> &'a str {
     if source.input.trim().is_empty() {
         source.source_instruction
@@ -248,7 +263,7 @@ fn prepare_lean(
         }
         "check_lean_file" => {
             let file = required_path(object, "path", source, &[".lean"])?;
-            ensure_readable_project_file(config, &file)?;
+            ensure_readable_project_file(config, source.action, &file)?;
             object.insert(
                 "path".to_owned(),
                 Value::String(config.resolve_path(&file).to_string_lossy().into_owned()),
@@ -308,7 +323,7 @@ fn prepare_prolog(
         }
         "run_prolog_file" => {
             let file = required_path(object, "file", source, &[".pl", ".pro", ".prolog"])?;
-            ensure_readable_project_file(config, &file)?;
+            ensure_readable_project_file(config, source.action, &file)?;
             if !object.contains_key("query")
                 && let Some(query) =
                     find_code_span([source.input, source.source_instruction], |value| {
@@ -323,12 +338,14 @@ fn prepare_prolog(
     Ok(())
 }
 
+/// The MATLAB host cannot see this workspace, so a project `.m` file is read
+/// here (after the capability check) and sent as code. Returns a replacement tool.
 fn prepare_matlab(
     config: &ProjectConfig,
     tool: &str,
     source: &AdapterInput<'_>,
     object: &mut Map<String, Value>,
-) -> Result<()> {
+) -> Result<Option<String>> {
     match tool {
         "evaluate_matlab_code" => {
             if !object.contains_key("code") {
@@ -336,15 +353,30 @@ fn prepare_matlab(
                     .unwrap_or_else(|| source.input.to_owned());
                 required_text(object, "code", &code)?;
             }
+            Ok(None)
         }
-        "run_matlab_file" | "run_matlab_test_file" => {
+        "run_matlab_file" => {
             let file = required_path(object, "script_path", source, &[".m"])?;
-            ensure_readable_project_file(config, &file)?;
+            ensure_readable_project_file(config, source.action, &file)?;
+            let path = config.resolve_path(&file);
+            let size = fs::metadata(&path)?.len();
+            if size > MAX_MATLAB_SCRIPT_BYTES {
+                bail!("MATLAB script is larger than {MAX_MATLAB_SCRIPT_BYTES} bytes");
+            }
+            let code = fs::read_to_string(&path)
+                .with_context(|| format!("MATLAB script is not UTF-8: {}", path.display()))?;
+            object.clear();
+            object.insert("code".to_owned(), Value::String(code));
+            Ok(Some("evaluate_matlab_code".to_owned()))
         }
+        "run_matlab_test_file" => bail!(
+            "run_matlab_test_file is unsupported: the MATLAB host cannot see workspace files and a test class cannot be sent as code"
+        ),
         _ => bail!("MATLAB adapter does not support tool {tool}"),
     }
-    Ok(())
 }
+
+const MAX_MATLAB_SCRIPT_BYTES: u64 = 256 * 1024;
 
 fn required_text(object: &mut Map<String, Value>, key: &str, fallback: &str) -> Result<()> {
     object
@@ -379,11 +411,14 @@ fn required_path(
         .with_context(|| format!("adapter could not produce required path argument: {key}"))
 }
 
-fn ensure_readable_project_file(config: &ProjectConfig, value: &str) -> Result<()> {
+/// Planner-supplied paths pass the same capability check as every other access.
+fn ensure_readable_project_file(config: &ProjectConfig, subject: &str, value: &str) -> Result<()> {
     let path = config.resolve_path(value);
     if !path.is_file() {
         bail!("adapter input file does not exist: {}", path.display());
     }
+    let resource = file_resource(&config.root, value)?;
+    config.authorize_route(subject, &CapabilityRequest::new("file.read", resource))?;
     Ok(())
 }
 
@@ -463,7 +498,7 @@ mod tests {
 
     #[test]
     fn prolog_adapter_recovers_typed_file_and_query() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let root = crate::test_support::project_root();
         let config = ProjectConfig::load(root).unwrap();
         let route = config.action("logic_rules").unwrap();
         let call = prepare_call(
@@ -495,7 +530,7 @@ mod tests {
 
     #[test]
     fn lean_adapter_recovers_source_from_operator_instruction() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let root = crate::test_support::project_root();
         let config = ProjectConfig::load(root).unwrap();
         let route = config.action("logic_proof").unwrap();
         let call = prepare_call(
@@ -519,8 +554,53 @@ mod tests {
     }
 
     #[test]
+    fn planner_paths_outside_granted_scopes_are_denied() {
+        let root = crate::test_support::project_root();
+        let config = ProjectConfig::load(&root).unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let outside_file = outside.path().join("rules.pl");
+        std::fs::write(&outside_file, "fact.").unwrap();
+        let prolog = |subject: &str, file: &str| {
+            prepare_call(
+                &config,
+                AdapterInput {
+                    action: subject,
+                    route: config.action(subject).unwrap(),
+                    requested_tool: Some("run_prolog_file"),
+                    input: "run",
+                    source_instruction: "run",
+                    arguments: json!({"file": file, "query": "fact."}),
+                },
+            )
+        };
+        // Outside the project, inside it but ungranted, and a traversal back out.
+        let denied = prolog("logic_rules", &outside_file.to_string_lossy()).unwrap_err();
+        assert!(denied.to_string().contains("outside the project"));
+        assert!(prolog("logic_rules", "config/runtime.toml").is_err());
+        assert!(prolog("logic_rules", "examples/../config/runtime.toml").is_err());
+        let granted = std::fs::read_dir(root.join("examples"))
+            .unwrap()
+            .flatten()
+            .flat_map(|dir| {
+                std::fs::read_dir(dir.path())
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+            })
+            .map(|entry| entry.path())
+            .find(|path| path.extension().is_some_and(|ext| ext == "pl"))
+            .expect("an example Prolog file");
+        let relative = granted
+            .strip_prefix(&root)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
+        assert!(prolog("logic_rules", &relative).is_ok());
+    }
+
+    #[test]
     fn lean_file_adapter_passes_an_absolute_verified_path() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let root = crate::test_support::project_root();
         let config = ProjectConfig::load(root).unwrap();
         let route = config.action("logic_proof").unwrap();
         let call = prepare_call(
@@ -542,7 +622,7 @@ mod tests {
 
     #[test]
     fn prolog_adapter_selects_file_tool_from_typed_source() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let root = crate::test_support::project_root();
         let config = ProjectConfig::load(root).unwrap();
         let route = config.action("logic_rules").unwrap();
         let call = prepare_call(
@@ -580,7 +660,7 @@ mod tests {
 
     #[test]
     fn codex_adapter_enforces_route_security_settings() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let root = crate::test_support::project_root();
         let config = ProjectConfig::load(root).unwrap();
         let route = config.action("open_data_acquisition").unwrap();
         let call = prepare_call(
@@ -608,28 +688,8 @@ mod tests {
     }
 
     #[test]
-    fn fixed_tool_rejects_override() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
-        let config = ProjectConfig::load(root).unwrap();
-        let route = config.action("code_review").unwrap();
-        let error = prepare_call(
-            &config,
-            AdapterInput {
-                action: "code_review",
-                route,
-                requested_tool: Some("codex"),
-                input: "review",
-                source_instruction: "review",
-                arguments: json!({}),
-            },
-        )
-        .unwrap_err();
-        assert!(error.to_string().contains("not allowed"));
-    }
-
-    #[test]
     fn matlab_adapter_recovers_code_from_original_instruction() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let root = crate::test_support::project_root();
         let config = ProjectConfig::load(root).unwrap();
         let route = config.action("calculation_graphing").unwrap();
         let call = prepare_call(
@@ -654,8 +714,46 @@ mod tests {
     }
 
     #[test]
+    fn matlab_file_is_sent_as_code_after_the_capability_check() {
+        let root = crate::test_support::project_root();
+        let config = ProjectConfig::load(root).unwrap();
+        let route = config.action("calculation_graphing").unwrap();
+        let prepare = |tool: &str, path: &str| {
+            prepare_call(
+                &config,
+                AdapterInput {
+                    action: "calculation_graphing",
+                    route,
+                    requested_tool: Some(tool),
+                    input: "",
+                    source_instruction: "",
+                    arguments: json!({"script_path": path}),
+                },
+            )
+        };
+        let call = prepare(
+            "run_matlab_file",
+            "examples/cvim_full_loop_test/full_loop_probe.m",
+        )
+        .unwrap();
+        assert_eq!(call.tool, "evaluate_matlab_code");
+        let code = call.arguments["code"].as_str().unwrap();
+        assert!(code.contains("FULL_LOOP_MATLAB_OK"));
+        assert!(call.arguments.get("script_path").is_none());
+        // The file read still requires a file.read grant.
+        assert!(prepare("run_matlab_file", "config/runtime.toml").is_err());
+        assert!(
+            prepare(
+                "run_matlab_test_file",
+                "examples/cvim_full_loop_test/full_loop_probe.m"
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn explicit_matlab_tool_wins_over_file_suffix_in_source() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let root = crate::test_support::project_root();
         let config = ProjectConfig::load(root).unwrap();
         let route = config.action("calculation_graphing").unwrap();
         let call = prepare_call(

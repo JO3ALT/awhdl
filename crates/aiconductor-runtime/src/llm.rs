@@ -95,7 +95,6 @@ impl LlmClient {
                             "tool": {
                                 "enum": [
                                     null,
-                                    "review_code",
                                     "check_lean_code",
                                     "check_lean_file",
                                     "get_lean_environment",

@@ -233,6 +233,11 @@ mod tests {
         ActionConfig {
             description: String::new(),
             kind: "mcp".to_owned(),
+            effect_class: None,
+            idempotency_argument: None,
+            manual_reconciliation: false,
+            human_approval: None,
+            location: None,
             model: None,
             fallback: Vec::new(),
             server: None,

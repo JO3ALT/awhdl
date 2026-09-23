@@ -1,0 +1,43 @@
+# Sanitized test fixture mirroring the deployment configuration. No real hosts,
+# users or paths. Route, capability and workflow files must match the deployment.
+schema_version = 1
+
+[servers.restricted_filter]
+enabled = true
+transport = "stdio"
+command = "scripts/mcp/start-restricted-filter"
+
+[servers.restricted_kdb]
+enabled = true
+transport = "stdio"
+command = "scripts/mcp/start-restricted-kdb"
+
+[servers.restricted_prolog]
+enabled = true
+transport = "stdio"
+command = "scripts/mcp/start-restricted-prolog"
+
+[servers.restricted_lean]
+enabled = true
+transport = "stdio"
+command = "scripts/mcp/start-restricted-lean"
+
+[servers.matlab_r2026a]
+enabled = true
+transport = "stdio"
+command = "scripts/mcp/start-matlab-r2026a"
+
+[servers.codex_cli]
+enabled = true
+transport = "stdio"
+command = "scripts/mcp/start-codex-cli"
+
+[servers.claude_code_cli]
+enabled = true
+transport = "stdio"
+command = "scripts/mcp/start-claude-code-cli"
+
+[servers.humanport_approver]
+enabled = true
+transport = "stdio"
+command = "scripts/mcp/start-humanport-approver"

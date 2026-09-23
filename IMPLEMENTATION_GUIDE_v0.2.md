@@ -1,4 +1,9 @@
 # AWHDL Implementation Guide v0.2
+
+> **Scope and status source of truth (Phase 7, 2026-09-23):** The v0.1 scope
+> and each feature's status are defined only by the matrix in
+> [PROFILE_v0.1](docs/PROFILE_v0.1.md). This document summarizes it; the
+> matrix wins on any difference. This document defines no scope of its own.
 ## Project: AI Conductor / AWHDL / cvim
 
 [日本語（正本）](IMPLEMENTATION_GUIDE_v0.2_ja.md) | English reference translation

@@ -17,9 +17,13 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "awhdl-ast",
+ "awhdl-checker",
+ "awhdl-parser",
  "chrono",
  "clap",
  "reqwest",
+ "ring",
  "serde",
  "serde_json",
  "tempfile",

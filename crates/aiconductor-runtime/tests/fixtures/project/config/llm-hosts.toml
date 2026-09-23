@@ -1,0 +1,91 @@
+# Sanitized test fixture mirroring the deployment configuration. No real hosts,
+# users or paths. Route, capability and workflow files must match the deployment.
+schema_version = 1
+default_orchestrator = "qwen3.8-27b-q5km"
+
+[hosts.local]
+ssh_target = ""
+
+[hosts.ai_10]
+ssh_target = "user@ai-10.example"
+
+[hosts.ai_10.tunnel]
+local_host = "127.0.0.1"
+local_port = 18080
+remote_host = "127.0.0.1"
+remote_port = 8080
+
+[hosts.ai_20]
+ssh_target = "user@ai-20.example"
+
+[[launch_profiles]]
+id = "qwen3.8-27b-q5km"
+host = "ai_10"
+model = "/models/qwen3.8-27b-q5km.gguf"
+launch_script = "/opt/example/bin/start-qwen3.8-27b-q5km"
+status = "installed"
+api_base = "http://127.0.0.1:18080"
+modality = "text"
+exclusive_group = "ai_10_llama_gpu"
+reasoning_effort = "low"
+planner_reasoning_effort = "none"
+
+[[launch_profiles]]
+id = "qwen3-4b-instruct-2507-q4km"
+host = "ai_10"
+model = "/models/qwen3-4b-instruct-2507-q4km.gguf"
+launch_script = "/opt/example/bin/start-qwen3-4b-instruct-2507-q4km"
+status = "installed"
+api_base = "http://127.0.0.1:18080"
+modality = "text"
+exclusive_group = "ai_10_llama_gpu"
+
+[[launch_profiles]]
+id = "devstral-small-2-24b"
+host = "ai_10"
+model = "/models/devstral-small-2-24b.gguf"
+launch_script = "/opt/example/bin/start-devstral-small-2-24b"
+status = "installed"
+api_base = "http://127.0.0.1:18080"
+modality = "text"
+exclusive_group = "ai_10_llama_gpu"
+
+[[launch_profiles]]
+id = "llm-jp-4-8b-thinking-bf16"
+host = "ai_10"
+model = "/models/llm-jp-4-8b-thinking-bf16.gguf"
+launch_script = "/opt/example/bin/start-llm-jp-4-8b-thinking-bf16"
+status = "installed"
+api_base = "http://127.0.0.1:18080"
+modality = "text"
+exclusive_group = "ai_10_llama_gpu"
+
+[[launch_profiles]]
+id = "qwen3vl-32b-rocm"
+host = "ai_20"
+model = "/models/qwen3vl-32b-rocm.gguf"
+launch_script = "/opt/example/bin/start-qwen3vl-32b-rocm"
+status = "installed"
+api_base = "http://127.0.0.1:8081"
+modality = "vision-text"
+exclusive_group = "ai_20_llama_gpu"
+
+[[launch_profiles]]
+id = "qwen3vl-32b-cuda"
+host = "ai_20"
+model = "/models/qwen3vl-32b-cuda.gguf"
+launch_script = "/opt/example/bin/start-qwen3vl-32b-cuda"
+status = "unavailable"
+api_base = "http://127.0.0.1:8082"
+modality = "vision-text"
+exclusive_group = "ai_20_llama_gpu"
+
+[[launch_profiles]]
+id = "qwen3vl-8b-rocm"
+host = "ai_20"
+model = "/models/qwen3vl-8b-rocm.gguf"
+launch_script = "/opt/example/bin/start-qwen3vl-8b-rocm"
+status = "running"
+api_base = "http://127.0.0.1:8083"
+modality = "vision-text"
+exclusive_group = "ai_20_llama_gpu"

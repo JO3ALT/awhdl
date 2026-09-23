@@ -1,0 +1,31 @@
+# Sanitized test fixture mirroring the deployment configuration. No real hosts,
+# users or paths. Route, capability and workflow files must match the deployment.
+schema_version = 1
+run_root = ".runtime/runs"
+
+[ssh]
+binary = "/usr/bin/ssh"
+identity_file = "~/.ssh/example_ed25519"
+connect_timeout_sec = 5
+
+[loop]
+max_iterations = 8
+max_wall_time_sec = 1800
+max_model_calls = 16
+max_mcp_calls = 32
+max_model_switches = 8
+max_network_requests = 20
+max_download_bytes = 536870912
+model_start_timeout_sec = 300
+device_timeout_sec = 900
+planner_retries = 2
+
+[planner]
+temperature = 0.0
+max_observation_bytes = 8192
+
+# Action-bound human approval adapter (Phase 4 / SECURITY_SPEC).
+[approval]
+server = "humanport_approver"
+ttl_sec = 600
+poll_ms = 500

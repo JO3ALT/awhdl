@@ -1476,3 +1476,75 @@ AWHDL -> AST -> static checks -> AI Conductor IR -> execution plan -> runtime
 ```
 
 It does not mean hardware synthesis.
+
+## Phase 1 execution identity addendum (2026-09-23)
+
+[Runtime semantics](docs/RUNTIME_SPEC.md) and
+[IR specification](docs/IR_SPEC.md) are normative for execution identity
+and take precedence within that scope. The integration runtime implements
+invocation / generation / correlation, checkpoint restoration and generation-aware
+barrier APIs. The AWHDL compiler remains Milestone 1; this does not implement
+AWHDL compile/run, signal/event scheduling or CLI resume.
+See [migration and implementation limits](docs/MIGRATION_PHASE_1.md).
+
+## Phase 2 Value / Event / Invocation separation (2026-09-23)
+
+Value is latest state, Event is a one-shot occurrence, and Invocation owns call
+lifecycle and result. Equal assignments do not emit changed events; distinct
+events with equal payloads remain distinct. [Runtime spec](docs/RUNTIME_SPEC.md)
+and [IR spec](docs/IR_SPEC.md) are normative and take precedence in this scope.
+Format v2 persists consumption to prevent event redelivery, without claiming
+exactly-once external effects. New sensitivity syntax and delta-cycle execution
+remain unimplemented. See [migration and limits](docs/MIGRATION_PHASE_2.md).
+
+## Phase 3 Effect / Retry / Idempotency (2026-09-23)
+
+Writes enter an Effect journal before dispatch. An ambiguous outcome becomes
+`UNCERTAIN` and cannot be resent automatically. The runtime assigns an
+idempotency key stable for the same action instance. [Runtime spec](docs/RUNTIME_SPEC.md)
+and [IR spec](docs/IR_SPEC.md) are normative and take precedence in this scope.
+The current checkpoint format is v3. Trusted reconciliation is a runtime API;
+automatic provider lookup and CLI resume are not implemented.
+See [migration and limits](docs/MIGRATION_PHASE_3.md).
+
+## Phase 4 Action-bound approval (2026-09-23)
+
+Human approval is not a boolean. It is bound to the SHA-256 hash of one
+canonical Effect instance (run, generation, effect, action, capability,
+resource, class, content hash), is single-use, expires, and is consumed in the
+same checkpoint transition that marks the Effect `STARTED`. External and
+destructive writes require approval by default. Only `single_action` scope is
+accepted. The current checkpoint format is v4. No approval adapter (HumanPort)
+is connected yet, so a required approval fails closed. See
+[migration and limits](docs/MIGRATION_PHASE_4.md).
+
+## Phase 5 Capability model (2026-09-23)
+
+Tool, filesystem, sandbox, network and model permissions are one parameterized
+capability model (`config/capabilities.toml`), default deny, queried through a
+single `authorize(subject, request)`. The authorizing capability's effect class
+drives journaling, retry and approval per tool; Effects and approvals bind to
+its handle. Planner-supplied file paths are canonicalized and must lie in granted
+project paths. The current checkpoint format is v5. Classification-aware export
+control and a credential broker are not implemented. See
+[migration and limits](docs/MIGRATION_PHASE_5.md).
+
+## Phase 6 Hard / soft completion (2026-09-23)
+
+A planner's completion claim only requests evaluation. The runtime decides
+`COMPLETE`, `INCOMPLETE`, `BLOCKED`, `FAILED` or `REQUIRES_REVIEW` from the
+state machine, Effect journal and typed adapter output. Hard conditions must be
+deterministic; model output and planner claims can only be soft. Workflows with
+external or destructive steps must be safety-critical with explicit hard
+conditions. The AWHDL `completion when hard/soft` syntax is not parsed yet;
+conditions are configuration. See
+[migration and limits](docs/MIGRATION_PHASE_6.md).
+
+## Phase 7 v0.1 profile (2026-09-23)
+
+The v0.1 implementation scope and feature status are defined only by
+[PROFILE_v0.1](docs/PROFILE_v0.1.md). This specification describes the
+target language/system; a construct here that the profile does not list as
+v0.1 is unsupported in v0.1. Normative set: LANGUAGE_SPEC, RUNTIME_SPEC,
+SECURITY_SPEC, IR_SPEC and PROFILE_v0.1 under `docs/`; on conflict the profile
+wins, then those specs.

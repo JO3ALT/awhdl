@@ -22,6 +22,13 @@ enum Commands {
         #[arg(long, default_value = "-")]
         prompt: String,
     },
+    /// Compile and run an AWHDL design; device calls use configured routes.
+    RunDesign {
+        file: PathBuf,
+        /// Input port value as name=value; the value is JSON when it parses as JSON.
+        #[arg(long = "input")]
+        inputs: Vec<String>,
+    },
 }
 
 #[tokio::main]
@@ -40,6 +47,22 @@ async fn main() -> Result<()> {
             let prompt = read_prompt(&prompt)?;
             let engine = Engine::new(config)?;
             println!("{}", engine.run(&prompt).await?);
+        }
+        Commands::RunDesign { file, inputs } => {
+            let source = std::fs::read_to_string(&file)
+                .with_context(|| format!("failed to read design: {}", file.display()))?;
+            let mut values = std::collections::BTreeMap::new();
+            for input in inputs {
+                let (name, value) = input
+                    .split_once('=')
+                    .with_context(|| format!("input must be name=value: {input}"))?;
+                let value = serde_json::from_str(value)
+                    .unwrap_or_else(|_| serde_json::Value::String(value.to_owned()));
+                values.insert(name.to_owned(), value);
+            }
+            let engine = Engine::new(config)?;
+            let outcome = engine.run_design(&source, values).await?;
+            println!("{}", serde_json::to_string_pretty(&outcome)?);
         }
     }
     Ok(())

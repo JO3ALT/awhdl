@@ -13,46 +13,120 @@ architecture_decl = {
     kw_architecture ~ ident ~ kw_of ~ ident ~ kw_is ~ declaration* ~ kw_begin ~
     concurrent_statement* ~ kw_end ~ ident? ~ semi
 }
-declaration = { device_decl | signal_decl }
-device_decl = { kw_device ~ ident ~ colon ~ ident ~ semi }
-signal_decl = { kw_signal ~ ident_list ~ colon ~ data_type ~ (assign_var ~ expression)? ~ semi }
+declaration = { device_decl | signal_decl | timer_decl | budget_decl | barrier_decl }
 
-concurrent_statement = { process_stmt }
+device_decl = { kw_device ~ ident ~ colon ~ ident ~ generic_clause? ~ semi }
+generic_clause = { kw_generic ~ lparen ~ generic_item ~ (comma ~ generic_item)* ~ rparen }
+generic_item = { ident ~ assoc ~ generic_value }
+generic_value = { string_literal | time_literal | integer | ident }
+
+signal_decl = { kw_signal ~ ident_list ~ colon ~ data_type ~ (assign_var ~ expression)? ~ semi }
+timer_decl = { kw_timer ~ ident ~ colon ~ kw_period ~ time_literal ~ semi }
+budget_decl = { kw_budget ~ ident ~ kw_is ~ budget_limit* ~ kw_end ~ kw_budget? ~ ident? ~ semi }
+budget_limit = { ident ~ assign_signal ~ (time_literal | integer) ~ semi }
+barrier_decl = { kw_barrier ~ ident ~ lparen ~ ident_list ~ rparen ~ semi }
+
+concurrent_statement = { process_stmt | concurrent_assert }
+concurrent_assert = { kw_assert ~ (assert_never_flow | assert_always | assert_never) ~ semi }
+assert_never_flow = { kw_never ~ lparen ~ ident ~ flow_arrow ~ ident ~ rparen }
+assert_always = { kw_always ~ lparen ~ expression ~ rparen }
+assert_never = { kw_never ~ lparen ~ expression ~ rparen }
+
 process_stmt = {
-    kw_process ~ lparen ~ name_list? ~ rparen ~ kw_begin ~ sequential_statement* ~
-    kw_end ~ kw_process ~ semi
+    kw_process ~ lparen ~ name_list? ~ rparen ~ process_timeout? ~ kw_begin ~
+    sequential_statement* ~ on_timeout? ~ kw_end ~ kw_process ~ semi
 }
-sequential_statement = { device_call | assignment | null_stmt }
-device_call = { selected_name ~ lparen ~ argument_list? ~ rparen ~ arrow ~ ident ~ semi }
+process_timeout = { kw_timeout ~ time_literal ~ semi }
+on_timeout = { kw_on ~ kw_timeout ~ sequential_statement* }
+
+sequential_statement = { if_stmt | parallel_stmt | assert_stmt | null_stmt | device_call | assignment }
+if_stmt = {
+    kw_if ~ expression ~ kw_then ~ sequential_statement* ~ elsif_clause* ~ else_clause? ~
+    kw_end ~ kw_if ~ semi
+}
+elsif_clause = { kw_elsif ~ expression ~ kw_then ~ sequential_statement* }
+else_clause = { kw_else ~ sequential_statement* }
+parallel_stmt = { kw_parallel ~ device_call* ~ kw_end ~ kw_parallel ~ semi }
+assert_stmt = { kw_assert ~ expression ~ semi }
+device_call = {
+    selected_name ~ lparen ~ argument_list? ~ rparen ~ call_timeout? ~ arrow ~ ident ~ semi
+}
+call_timeout = { kw_timeout ~ time_literal }
 assignment = { ident ~ assign_signal ~ expression ~ semi }
 null_stmt = { kw_null ~ semi }
 
 selected_name = { ident ~ dot ~ ident }
 argument_list = { expression ~ (comma ~ expression)* }
-expression = @{ string_literal | integer | selected_name | ident }
+
+expression = { or_expr }
+or_expr = { and_expr ~ (op_or ~ and_expr)* }
+and_expr = { not_expr ~ (op_and ~ not_expr)* }
+not_expr = { op_not ~ not_expr | relation }
+relation = { additive ~ (rel_op ~ additive)? }
+additive = { primary ~ (add_op ~ primary)* }
+primary = { lparen ~ expression ~ rparen | string_literal | time_literal | integer | boolean | name }
+rel_op = { "/=" | "<=" | ">=" | "=" | "<" | ">" }
+add_op = { "+" | "-" }
+op_or = { kw_or }
+op_and = { kw_and }
+op_not = { kw_not }
+boolean = { kw_true | kw_false }
+name = ${ ident ~ ("." ~ ident)* }
+
 data_type = { ident ~ (lt ~ ident ~ gt)? }
 ident_list = { ident ~ (comma ~ ident)* }
 name_list = { selected_name_or_ident ~ (comma ~ selected_name_or_ident)* }
 selected_name_or_ident = @{ ident ~ (dot ~ ident)? }
 
-ident = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
+time_literal = ${ integer ~ WHITESPACE* ~ time_unit }
+time_unit = @{ ("ms" | "sec" | "min" | "hour" | "day") ~ !ident_char }
+
+ident_char = _{ ASCII_ALPHANUMERIC | "_" }
+keyword = @{
+    ("architecture" | "assert" | "always" | "and" | "barrier" | "begin" | "budget" |
+     "device" | "else" | "elsif" | "end" | "entity" | "false" | "generic" | "if" |
+     "inout" | "in" | "is" | "never" | "not" | "null" | "of" | "on" | "or" | "out" |
+     "parallel" | "period" | "port" | "process" | "signal" | "then" | "timeout" |
+     "timer" | "true") ~ !ident_char
+}
+ident = @{ !keyword ~ (ASCII_ALPHA | "_") ~ ident_char* }
 integer = @{ "-"? ~ ASCII_DIGIT+ }
 string_literal = @{ "\"" ~ ("\\\"" | !"\"" ~ ANY)* ~ "\"" }
 
-kw_entity = _{ "entity" }
-kw_architecture = _{ "architecture" }
-kw_device = _{ "device" }
-kw_signal = _{ "signal" }
-kw_process = _{ "process" }
-kw_port = _{ "port" }
-kw_is = _{ "is" }
-kw_of = _{ "of" }
-kw_begin = _{ "begin" }
-kw_end = _{ "end" }
-kw_inout = { "inout" }
-kw_in = { "in" }
-kw_out = { "out" }
-kw_null = _{ "null" }
+kw_entity = @{ "entity" ~ !ident_char }
+kw_architecture = @{ "architecture" ~ !ident_char }
+kw_device = @{ "device" ~ !ident_char }
+kw_generic = @{ "generic" ~ !ident_char }
+kw_signal = @{ "signal" ~ !ident_char }
+kw_timer = @{ "timer" ~ !ident_char }
+kw_period = @{ "period" ~ !ident_char }
+kw_budget = @{ "budget" ~ !ident_char }
+kw_barrier = @{ "barrier" ~ !ident_char }
+kw_process = @{ "process" ~ !ident_char }
+kw_port = @{ "port" ~ !ident_char }
+kw_is = @{ "is" ~ !ident_char }
+kw_of = @{ "of" ~ !ident_char }
+kw_begin = @{ "begin" ~ !ident_char }
+kw_end = @{ "end" ~ !ident_char }
+kw_if = @{ "if" ~ !ident_char }
+kw_then = @{ "then" ~ !ident_char }
+kw_elsif = @{ "elsif" ~ !ident_char }
+kw_else = @{ "else" ~ !ident_char }
+kw_parallel = @{ "parallel" ~ !ident_char }
+kw_assert = @{ "assert" ~ !ident_char }
+kw_always = @{ "always" ~ !ident_char }
+kw_never = @{ "never" ~ !ident_char }
+kw_timeout = @{ "timeout" ~ !ident_char }
+kw_on = @{ "on" ~ !ident_char }
+kw_and = @{ "and" ~ !ident_char }
+kw_or = @{ "or" ~ !ident_char }
+kw_not = @{ "not" ~ !ident_char }
+kw_true = @{ "true" ~ !ident_char }
+kw_false = @{ "false" ~ !ident_char }
+kw_inout = @{ "inout" ~ !ident_char }
+kw_in = @{ "in" ~ !ident_char }
+kw_out = @{ "out" ~ !ident_char }
+kw_null = @{ "null" ~ !ident_char }
 
 lparen = _{ "(" }
 rparen = _{ ")" }
@@ -63,5 +137,7 @@ dot = _{ "." }
 lt = _{ "<" }
 gt = _{ ">" }
 arrow = _{ "->" }
+flow_arrow = _{ "->" }
+assoc = _{ "=>" }
 assign_signal = _{ "<=" }
 assign_var = _{ ":=" }

@@ -28,6 +28,23 @@ impl Budget {
         }
     }
 
+    /// Apply a workflow's own limits; they can only lower the configured ones.
+    pub fn tighten(
+        &mut self,
+        iterations: Option<u32>,
+        mcp_calls: Option<u32>,
+        model_calls: Option<u32>,
+    ) {
+        let lower = |limit: &mut u32, value: Option<u32>| {
+            if let Some(value) = value {
+                *limit = (*limit).min(value);
+            }
+        };
+        lower(&mut self.limits.max_iterations, iterations);
+        lower(&mut self.limits.max_mcp_calls, mcp_calls);
+        lower(&mut self.limits.max_model_calls, model_calls);
+    }
+
     pub fn elapsed(&self) -> Duration {
         self.started.elapsed()
     }

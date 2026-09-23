@@ -5,11 +5,15 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+awhdl-ast = { path = "../awhdl-ast" }
+awhdl-checker = { path = "../awhdl-checker" }
+awhdl-parser = { path = "../awhdl-parser" }
 anyhow.workspace = true
 async-trait.workspace = true
 chrono.workspace = true
 clap.workspace = true
 reqwest.workspace = true
+ring.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true

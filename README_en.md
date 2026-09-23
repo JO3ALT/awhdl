@@ -115,9 +115,16 @@ Parse and structural errors return a non-zero status and a source location.
 | Publication checklist | [English](docs/PUBLICATION_CHECKLIST.md) | [日本語](docs/PUBLICATION_CHECKLIST_ja.md) |
 | cvim boundary | [English](cvim/README.md) | [日本語](cvim/README_ja.md) |
 | Implementation guide | [English](IMPLEMENTATION_GUIDE_v0.2.md) | [日本語](IMPLEMENTATION_GUIDE_v0.2_ja.md) |
+| v0.1 profile (scope and status) | [English](docs/PROFILE_v0.1.md) | — |
+| Language, runtime, security, IR specifications (normative) | [LANGUAGE](docs/LANGUAGE_SPEC.md), [RUNTIME](docs/RUNTIME_SPEC.md), [SECURITY](docs/SECURITY_SPEC.md), [IR](docs/IR_SPEC.md) | — |
+| Specification refinement decisions | — | [日本語](docs/REFINEMENT_DECISIONS_ja.md) |
 
-The specifications describe the intended design. The implementation-status
-document is authoritative about what the current code supports.
+The specifications describe the intended design. The v0.1 scope and each
+feature's status are defined only by the matrix in
+[PROFILE_v0.1](docs/PROFILE_v0.1.md), which a test keeps consistent with the
+code; the implementation-status document summarizes it. The refinement
+documents (profile and LANGUAGE/RUNTIME/SECURITY/IR specs) are English only for
+now; Japanese versions have not been written yet.
 
 The Japanese documents are normative. The English documents are reference
 translations; if the two versions differ, the Japanese version takes
@@ -127,10 +134,11 @@ precedence.
 
 - `awhdl-ast`: AST definitions and source byte spans.
 - `awhdl-parser`: Pest grammar and AST construction.
-- `awhdl-checker`: Milestone 1 structural and name checks.
+- `awhdl-checker`: structural, information-flow and profile checks.
 - `conductor-cli`: the `aic` command-line frontend.
-- `aiconductor-runtime`: a non-normative integration prototype kept separate
-  from the AWHDL compiler pipeline.
+- `aiconductor-runtime`: compiles AWHDL designs and runs them with delta
+  cycles; Effects, approval, capabilities and completion
+  (`aiconductor run-design`).
 
 ## Development checks
 
@@ -142,10 +150,11 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 ## Current limitations
 
-Milestone 1 does not implement classification-lattice enforcement,
-information-flow analysis, JSON IR generation, AWHDL execution, timers,
-parallel blocks, cloud APIs, or sandboxing. Unsupported syntax is rejected; it
-is never silently accepted.
+Open items are listed under "v0.1 gaps" in
+[PROFILE_v0.1](docs/PROFILE_v0.1.md). Runtime tests use the bundled sanitized
+configuration in `crates/aiconductor-runtime/tests/fixtures/project` and need no
+LLM, MCP server or human; live checks with real devices are the examples under
+`examples/`. Unsupported syntax is rejected; it is never silently accepted.
 
 ## License
 

@@ -1,0 +1,153 @@
+# AIConductor default role routing.
+# AWHDL may override these values, but all overrides must resolve through the
+# IDs defined in llm-hosts.toml and mcp-servers.toml.
+
+schema_version = 1
+default_action = "loop"
+
+[policy]
+mcp_access = "allow-listed-per-action"
+fallback_may_expand_mcp_access = false
+record_resolved_route = true
+
+[actions.loop]
+description = "Default orchestration and repeated control loop"
+kind = "model"
+effect_class = "pure"
+model = "qwen3.8-27b-q5km"
+fallback = ["qwen3-4b-instruct-2507-q4km"]
+
+[actions.initial_coding]
+description = "Generate the initial implementation"
+kind = "model"
+effect_class = "pure"
+model = "qwen3.8-27b-q5km"
+fallback = ["qwen3-4b-instruct-2507-q4km"]
+
+[actions.japanese_polishing]
+description = "Polish and rewrite final Japanese text"
+kind = "model"
+effect_class = "pure"
+model = "llm-jp-4-8b-thinking-bf16"
+fallback = ["qwen3-4b-instruct-2507-q4km"]
+repeatable = true
+
+[actions.vision]
+description = "Understand images and perform vision-language tasks"
+kind = "model"
+effect_class = "pure"
+model = "qwen3vl-8b-rocm"
+
+[actions.logic_proof]
+description = "Check logic that can be expressed and proved in Lean"
+kind = "mcp"
+effect_class = "read"
+adapter = "lean"
+server = "restricted_lean"
+preferred_tools = ["check_lean_code", "check_lean_file", "get_lean_environment"]
+
+[actions.logic_rules]
+description = "Check logic that can be represented as rules or queries"
+kind = "mcp"
+effect_class = "read"
+adapter = "prolog"
+server = "restricted_prolog"
+preferred_tools = ["run_prolog", "run_prolog_file"]
+
+[actions.calculation_graphing]
+description = "Numerical calculation, analysis, plotting, and graph generation"
+kind = "mcp"
+effect_class = "local_write"
+adapter = "matlab"
+server = "matlab_r2026a"
+# run_matlab_file sends the project file as code; test files are unsupported.
+preferred_tools = ["evaluate_matlab_code", "run_matlab_file"]
+
+[actions.table_analysis]
+description = "Restricted KDB/q table and time-series analysis"
+kind = "mcp"
+effect_class = "local_write"
+adapter = "passthrough"
+server = "restricted_kdb"
+preferred_tools = ["run_q", "load_csv", "save_table", "save_csv", "load_table", "get_interpreter_state", "get_state_source", "prune_state", "list_server_limits"]
+
+[actions.text_filtering]
+description = "Restricted local filtering, aggregation, and bounded text processing"
+kind = "mcp"
+effect_class = "read"
+adapter = "passthrough"
+server = "restricted_filter"
+preferred_tools = ["run_filter_pipeline", "group_by_count", "csv_summary", "preview_file", "list_files", "list_allowed_commands"]
+
+[actions.deep_reasoning]
+description = "Tasks requiring deeper reasoning or investigation"
+kind = "mcp"
+# Codex sends prompts to a cloud model.
+location = "cloud"
+effect_class = "read"
+adapter = "codex"
+server = "codex_cli"
+tool = "codex"
+sandbox = "read-only"
+approval_policy = "never"
+
+[actions.open_data_acquisition]
+description = "Find and acquire publicly available open data"
+kind = "mcp"
+# Codex sends prompts to a cloud model.
+location = "cloud"
+effect_class = "external_write"
+manual_reconciliation = true
+adapter = "codex"
+server = "codex_cli"
+tool = "codex"
+sandbox = "danger-full-access"
+approval_policy = "never"
+network_access = true
+workdir = ".runtime/open-data"
+source_policy = "open-data-only"
+record_source_url = true
+record_retrieved_at = true
+
+[logic_dispatch]
+proof_candidate = "logic_proof"
+rule_candidate = "logic_rules"
+otherwise = "deep_reasoning"
+
+[coding_pipeline]
+steps = ["initial_coding"]
+controller = "loop"
+
+[analysis_pipeline]
+controller = "loop"
+calculation = "calculation_graphing"
+table = "table_analysis"
+filtering = "text_filtering"
+reasoning = "deep_reasoning"
+open_data = "open_data_acquisition"
+
+[modality_dispatch]
+image = "vision"
+vision = "vision"
+
+[presentation_pipeline]
+japanese_polishing = "japanese_polishing"
+
+[workflows.open_data_population]
+match_all = ["World Bank", "SP.POP.TOTL", "population_assessment_from_data"]
+steps = ["open_data_acquisition", "calculation_graphing", "logic_rules"]
+
+# Phase 6: completion is decided by the runtime, not by the planner's claim.
+[workflows.open_data_population.completion]
+safety_critical = true
+hard = ["succeeded:open_data_acquisition", "succeeded:calculation_graphing", "succeeded:logic_rules", "effects_resolved"]
+
+[workflows.cvim_full_loop]
+match_all = ["AICONDUCTOR_CVIM_FULL_LOOP_V1", "full_loop_verdict"]
+steps = ["initial_coding", "table_analysis", "text_filtering", "calculation_graphing", "logic_rules", "logic_proof", "deep_reasoning"]
+
+[workflows.cvim_full_loop.completion]
+hard = ["succeeded:table_analysis", "succeeded:text_filtering", "succeeded:calculation_graphing", "succeeded:logic_rules", "succeeded:logic_proof", "succeeded:deep_reasoning"]
+# A model step's success is only model output, so it can be soft at most.
+soft = ["succeeded:initial_coding"]
+on_soft_failure = "requires_review"

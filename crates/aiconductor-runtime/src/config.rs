@@ -1,3 +1,6 @@
+use crate::capability::{Authorization, CapabilityPolicy, CapabilityRequest};
+use crate::completion::CompletionPolicy;
+use crate::effect::EffectClass;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -11,6 +14,7 @@ pub struct ProjectConfig {
     pub models: ModelInventory,
     pub routes: RoutingConfig,
     pub mcp: McpInventory,
+    pub capabilities: CapabilityPolicy,
 }
 
 impl ProjectConfig {
@@ -23,15 +27,86 @@ impl ProjectConfig {
         let models = load_toml::<ModelInventory>(&root.join("config/llm-hosts.toml"))?;
         let routes = load_toml::<RoutingConfig>(&root.join("config/routing-defaults.toml"))?;
         let mcp = load_toml::<McpInventory>(&root.join("config/mcp-servers.toml"))?;
+        let capabilities = load_toml::<CapabilityPolicy>(&root.join("config/capabilities.toml"))?;
         let config = Self {
             root,
             runtime,
             models,
             routes,
             mcp,
+            capabilities,
         };
         config.validate()?;
         Ok(config)
+    }
+
+    /// Authorize a route's own static needs and cap each grant's class at the
+    /// route's declared class, so the route-level retry/approval rules stay sound.
+    pub fn authorize_route(
+        &self,
+        name: &str,
+        request: &CapabilityRequest,
+    ) -> Result<Authorization> {
+        let route = self
+            .action(name)
+            .with_context(|| format!("unknown route {name}"))?;
+        let authorization = self.capabilities.authorize(name, request)?;
+        if authorization.effect_class.rank() > route.effective_class().rank() {
+            bail!(
+                "capability {} exceeds the effect class of route {name}",
+                authorization.capability_id
+            );
+        }
+        Ok(authorization)
+    }
+
+    fn validate_capabilities(&self) -> Result<()> {
+        self.capabilities.validate()?;
+        for grant in &self.capabilities.grants {
+            for subject in &grant.subjects {
+                if !self.routes.actions.contains_key(subject) {
+                    bail!("capability {} names unknown route {subject}", grant.id);
+                }
+            }
+        }
+        self.authorize_route(
+            &self.routes.default_action,
+            &CapabilityRequest::new(
+                "model.chat",
+                format!("model:{}", self.models.default_orchestrator),
+            ),
+        )?;
+        for (name, route) in &self.routes.actions {
+            let requests = match route.kind.as_str() {
+                "model" => route
+                    .model
+                    .iter()
+                    .chain(&route.fallback)
+                    .map(|model| CapabilityRequest::new("model.chat", format!("model:{model}")))
+                    .collect::<Vec<_>>(),
+                "mcp" => {
+                    let server = route.server.as_deref().unwrap_or_default();
+                    let mut requests = route
+                        .tool
+                        .iter()
+                        .chain(&route.preferred_tools)
+                        .map(|tool| {
+                            CapabilityRequest::new("mcp.call", format!("mcp:{server}/{tool}"))
+                        })
+                        .collect::<Vec<_>>();
+                    if route.adapter == Some(McpAdapterKind::Codex) {
+                        requests.extend(crate::adapters::codex_capability_requests(route)?);
+                    }
+                    requests
+                }
+                _ => Vec::new(),
+            };
+            for request in requests {
+                self.authorize_route(name, &request)
+                    .with_context(|| format!("route {name} is not fully authorized"))?;
+            }
+        }
+        Ok(())
     }
 
     pub fn validate(&self) -> Result<()> {
@@ -64,8 +139,37 @@ impl ProjectConfig {
                     bail!("route {name} depends on unknown action {dependency}");
                 }
             }
+            if route
+                .idempotency_argument
+                .as_ref()
+                .is_some_and(String::is_empty)
+            {
+                bail!("route {name} has an empty idempotency argument");
+            }
+            if matches!(
+                route.effective_class(),
+                EffectClass::ExternalWrite | EffectClass::Destructive
+            ) && route.idempotency_argument.is_none()
+                && !route.manual_reconciliation
+            {
+                bail!("route {name} needs provider idempotency or manual reconciliation");
+            }
+            route
+                .route_location()
+                .with_context(|| format!("route {name}"))?;
+            if route.human_approval.is_some() && !route.effective_class().is_write() {
+                bail!("route {name} sets human_approval but is not a write");
+            }
+            if route.effective_class() == EffectClass::Destructive
+                && !route.requires_human_approval()
+            {
+                bail!("destructive route {name} cannot opt out of human approval");
+            }
             match route.kind.as_str() {
                 "model" => {
+                    if route.effective_class().is_write() {
+                        bail!("model route {name} cannot use effectful MCP dispatch");
+                    }
                     let model = route
                         .model
                         .as_deref()
@@ -96,6 +200,67 @@ impl ProjectConfig {
                 }
                 if !self.routes.actions.contains_key(step) {
                     bail!("workflow {name} references unknown action {step}");
+                }
+            }
+        }
+        if let Some(approval) = &self.runtime.approval {
+            if !self.mcp.servers.contains_key(&approval.server) {
+                bail!("approval server {} is not configured", approval.server);
+            }
+            if !(1..=86_400).contains(&approval.ttl_sec) || approval.poll_ms == 0 {
+                bail!("approval ttl_sec must be 1..=86400 and poll_ms positive");
+            }
+            // The approval channel is trusted: no agent route may reach it.
+            if let Some((name, _)) = self
+                .routes
+                .actions
+                .iter()
+                .find(|(_, route)| route.server.as_deref() == Some(approval.server.as_str()))
+            {
+                bail!("route {name} must not use the approval server");
+            }
+        }
+        self.validate_completion()?;
+        self.validate_capabilities()
+    }
+
+    fn is_model_route(&self, action: &str) -> bool {
+        self.action(action)
+            .is_some_and(|route| route.kind == "model")
+    }
+
+    /// Hard conditions are deterministic and reference known actions; a
+    /// workflow with an external or destructive step must be safety-critical.
+    fn validate_completion(&self) -> Result<()> {
+        let policies = std::iter::once(("<default>", &self.routes.completion, None)).chain(
+            self.routes
+                .workflows
+                .iter()
+                .map(|(name, workflow)| (name.as_str(), &workflow.completion, Some(workflow))),
+        );
+        for (name, policy, workflow) in policies {
+            policy
+                .validate(|action| self.is_model_route(action))
+                .with_context(|| format!("completion policy of {name}"))?;
+            for condition in policy
+                .hard_conditions()?
+                .iter()
+                .chain(&policy.soft_conditions()?)
+            {
+                if let Some(action) = condition.action()
+                    && !self.routes.actions.contains_key(action)
+                {
+                    bail!("completion policy of {name} references unknown action {action}");
+                }
+            }
+            if let Some(workflow) = workflow {
+                let external = workflow.steps.iter().any(|step| {
+                    self.action(step).is_some_and(|route| {
+                        route.effective_class().rank() >= EffectClass::ExternalWrite.rank()
+                    })
+                });
+                if external && !policy.safety_critical {
+                    bail!("workflow {name} has an external write step and must be safety_critical");
                 }
             }
         }
@@ -141,6 +306,28 @@ pub struct RuntimeConfig {
     #[serde(rename = "loop")]
     pub loop_limits: LoopLimits,
     pub planner: PlannerConfig,
+    /// Without an approval adapter, approval-bound writes fail closed.
+    #[serde(default)]
+    pub approval: Option<ApprovalAdapterConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApprovalAdapterConfig {
+    /// MCP server running HumanPort in approver mode.
+    pub server: String,
+    #[serde(default = "default_approval_ttl")]
+    pub ttl_sec: i64,
+    #[serde(default = "default_approval_poll")]
+    pub poll_ms: u64,
+}
+
+fn default_approval_ttl() -> i64 {
+    600
+}
+
+fn default_approval_poll() -> u64 {
+    500
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -229,6 +416,9 @@ pub struct RoutingConfig {
     pub presentation_pipeline: BTreeMap<String, String>,
     #[serde(default)]
     pub workflows: BTreeMap<String, WorkflowConfig>,
+    /// Completion policy for runs that match no workflow.
+    #[serde(default)]
+    pub completion: CompletionPolicy,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -236,6 +426,8 @@ pub struct WorkflowConfig {
     #[serde(default)]
     pub match_all: Vec<String>,
     pub steps: Vec<String>,
+    #[serde(default)]
+    pub completion: CompletionPolicy,
 }
 
 impl RoutingConfig {
@@ -256,6 +448,20 @@ impl RoutingConfig {
 pub struct ActionConfig {
     pub description: String,
     pub kind: String,
+    #[serde(default)]
+    pub effect_class: Option<EffectClass>,
+    #[serde(default)]
+    pub idempotency_argument: Option<String>,
+    #[serde(default)]
+    pub manual_reconciliation: bool,
+    /// Action-bound human approval for write Effects. Distinct from Codex's
+    /// `approval_policy`, which is forwarded to the Codex CLI.
+    #[serde(default)]
+    pub human_approval: Option<HumanApproval>,
+    /// Where the route's data goes: `local` (default) or `cloud`. AWHDL devices
+    /// bound to the route must declare the same location.
+    #[serde(default)]
+    pub location: Option<String>,
     #[serde(default)]
     pub model: Option<String>,
     #[serde(default)]
@@ -284,11 +490,48 @@ pub struct ActionConfig {
     pub depends_on: Vec<String>,
 }
 
+impl ActionConfig {
+    pub fn effective_class(&self) -> EffectClass {
+        self.effect_class.unwrap_or(if self.kind == "model" {
+            EffectClass::Pure
+        } else {
+            EffectClass::ExternalWrite
+        })
+    }
+
+    pub fn route_location(&self) -> Result<awhdl_checker::Location> {
+        match self.location.as_deref() {
+            None => Ok(awhdl_checker::Location::Local),
+            Some(name) => awhdl_checker::parse_location(name)
+                .with_context(|| format!("unsupported route location {name}")),
+        }
+    }
+
+    /// External and destructive writes default to required approval.
+    pub fn requires_human_approval(&self) -> bool {
+        self.requires_human_approval_for(self.effective_class())
+    }
+
+    /// Approval for one call, whose class comes from the authorizing capability.
+    pub fn requires_human_approval_for(&self, class: EffectClass) -> bool {
+        match self.human_approval {
+            Some(setting) => setting == HumanApproval::Required,
+            None => matches!(class, EffectClass::ExternalWrite | EffectClass::Destructive),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HumanApproval {
+    Required,
+    NotRequired,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum McpAdapterKind {
     Codex,
-    ClaudeReview,
     Lean,
     Prolog,
     Matlab,
@@ -318,13 +561,224 @@ mod tests {
 
     #[test]
     fn production_configuration_is_consistent() {
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
-        ProjectConfig::load(root).unwrap();
+        let fixture = crate::test_support::project_root();
+        ProjectConfig::load(&fixture).unwrap();
+        // On a development machine, also validate the real deployment and keep
+        // the fixture's routes and grants identical to it.
+        if let Some(root) = crate::test_support::deployment_root() {
+            ProjectConfig::load(&root).unwrap();
+            for file in ["routing-defaults.toml", "capabilities.toml"] {
+                assert_eq!(
+                    fs::read_to_string(root.join("config").join(file)).unwrap(),
+                    fs::read_to_string(fixture.join("config").join(file)).unwrap(),
+                    "test fixture {file} is out of sync with the deployment"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn human_approval_defaults_and_opt_outs_are_validated() {
+        let root = crate::test_support::project_root();
+        let mut config = ProjectConfig::load(root).unwrap();
+        let route = |config: &ProjectConfig, name: &str| config.action(name).unwrap().clone();
+        // Every external write, including Codex open-data acquisition, needs approval.
+        assert!(route(&config, "open_data_acquisition").requires_human_approval());
+        assert!(!route(&config, "calculation_graphing").requires_human_approval());
+        let action = config
+            .routes
+            .actions
+            .get_mut("open_data_acquisition")
+            .unwrap();
+        // An explicit opt-out remains possible for external writes...
+        action.human_approval = Some(HumanApproval::NotRequired);
+        assert!(!action.requires_human_approval());
+        assert!(config.validate().is_ok());
+        let action = config
+            .routes
+            .actions
+            .get_mut("open_data_acquisition")
+            .unwrap();
+        // ...but never for destructive ones.
+        action.effect_class = Some(EffectClass::Destructive);
+        action.human_approval = Some(HumanApproval::NotRequired);
+        assert!(config.validate().is_err());
+        let action = config.routes.actions.get_mut("logic_rules").unwrap();
+        action.human_approval = Some(HumanApproval::Required);
+        config
+            .routes
+            .actions
+            .get_mut("open_data_acquisition")
+            .unwrap()
+            .human_approval = None;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn capabilities_unify_tool_file_sandbox_and_model_policy() {
+        let root = crate::test_support::project_root();
+        let config = ProjectConfig::load(&root).unwrap();
+        let mcp = |subject: &str, resource: &str| {
+            config.authorize_route(subject, &CapabilityRequest::new("mcp.call", resource))
+        };
+        // Tool-level classes inside one route.
+        assert_eq!(
+            mcp("table_analysis", "mcp:restricted_kdb/get_interpreter_state")
+                .unwrap()
+                .effect_class,
+            EffectClass::Read
+        );
+        assert_eq!(
+            mcp("table_analysis", "mcp:restricted_kdb/save_csv")
+                .unwrap()
+                .effect_class,
+            EffectClass::LocalWrite
+        );
+        assert!(mcp("table_analysis", "mcp:restricted_kdb/drop_everything").is_err());
+        assert!(mcp("calculation_graphing", "mcp:restricted_kdb/run_q").is_err());
+        assert!(
+            config
+                .authorize_route(
+                    "logic_rules",
+                    &CapabilityRequest::new("file.read", "file:.runtime/secrets/runtime.toml"),
+                )
+                .is_err()
+        );
+        assert!(
+            config
+                .authorize_route(
+                    "deep_reasoning",
+                    &CapabilityRequest::new("network.connect", "host:*"),
+                )
+                .is_err()
+        );
+        assert!(
+            config
+                .authorize_route(
+                    "vision",
+                    &CapabilityRequest::new("model.chat", "model:qwen3.8-27b-q5km"),
+                )
+                .is_err()
+        );
+        let open_data = config.action("open_data_acquisition").unwrap();
+        let actions = crate::adapters::codex_capability_requests(open_data)
+            .unwrap()
+            .into_iter()
+            .map(|request| request.action)
+            .collect::<Vec<_>>();
+        assert_eq!(actions, ["sandbox.full_access", "network.connect"]);
+    }
+
+    #[test]
+    fn capability_policy_changes_are_validated_against_routes() {
+        let root = crate::test_support::project_root();
+        let config = ProjectConfig::load(&root).unwrap();
+        fn grant<'a>(
+            config: &'a mut ProjectConfig,
+            id: &str,
+        ) -> &'a mut crate::capability::Capability {
+            let index = config
+                .capabilities
+                .grants
+                .iter()
+                .position(|grant| grant.id == id)
+                .unwrap();
+            &mut config.capabilities.grants[index]
+        }
+        // A grant above the route's class ceiling is rejected.
+        let mut escalated = config.clone();
+        grant(&mut escalated, "lean_check").effect_class = EffectClass::ExternalWrite;
+        assert!(escalated.validate().is_err());
+        // Revoking a needed grant leaves the route unauthorized.
+        let mut revoked = config.clone();
+        revoked.capabilities.revoke("prolog_query").unwrap();
+        assert!(revoked.validate().is_err());
+        let mut unknown = config.clone();
+        grant(&mut unknown, "lean_check")
+            .subjects
+            .push("ghost".to_owned());
+        assert!(unknown.validate().is_err());
+        // A scope change produces a different handle, invalidating bound approvals.
+        let before = config
+            .authorize_route(
+                "calculation_graphing",
+                &CapabilityRequest::new("mcp.call", "mcp:matlab_r2026a/evaluate_matlab_code"),
+            )
+            .unwrap();
+        let mut narrowed = config.clone();
+        grant(&mut narrowed, "matlab_execute").resource = "mcp:matlab_r2026a/*_matlab_*".to_owned();
+        let after = narrowed
+            .authorize_route(
+                "calculation_graphing",
+                &CapabilityRequest::new("mcp.call", "mcp:matlab_r2026a/evaluate_matlab_code"),
+            )
+            .unwrap();
+        assert_eq!(before.capability_id, after.capability_id);
+        assert_ne!(before.handle, after.handle);
+    }
+
+    #[test]
+    fn completion_policies_are_statically_checked() {
+        let root = crate::test_support::project_root();
+        let config = ProjectConfig::load(&root).unwrap();
+        let open_data = &config.routes.workflows["open_data_population"].completion;
+        assert!(open_data.safety_critical && !open_data.hard.is_empty());
+        let edit = |change: &dyn Fn(&mut ProjectConfig)| {
+            let mut edited = config.clone();
+            change(&mut edited);
+            edited.validate()
+        };
+        fn workflow(config: &mut ProjectConfig) -> &mut CompletionPolicy {
+            &mut config
+                .routes
+                .workflows
+                .get_mut("open_data_population")
+                .unwrap()
+                .completion
+        }
+        // External write step without a safety-critical policy.
+        assert!(edit(&|c| workflow(c).safety_critical = false).is_err());
+        // Model output or planner claims cannot be hard conditions.
+        assert!(edit(&|c| workflow(c).hard.push("planner_claim".to_owned())).is_err());
+        assert!(edit(&|c| workflow(c).hard.push("succeeded:initial_coding".to_owned())).is_err());
+        assert!(edit(&|c| workflow(c).hard.push("succeeded:ghost".to_owned())).is_err());
+        assert!(edit(&|c| workflow(c).soft.push("succeeded:initial_coding".to_owned())).is_ok());
+    }
+
+    #[test]
+    fn approval_server_is_unreachable_from_routes() {
+        let root = crate::test_support::project_root();
+        let config = ProjectConfig::load(&root).unwrap();
+        let approval = config
+            .runtime
+            .approval
+            .clone()
+            .expect("approval adapter configured");
+        let mut exposed = config.clone();
+        exposed
+            .routes
+            .actions
+            .get_mut("text_filtering")
+            .unwrap()
+            .server = Some(approval.server);
+        let error = format!("{:#}", exposed.validate().unwrap_err());
+        assert!(
+            error.contains("must not use the approval server"),
+            "{error}"
+        );
+        let mut unknown_location = config.clone();
+        unknown_location
+            .routes
+            .actions
+            .get_mut("text_filtering")
+            .unwrap()
+            .location = Some("sandbox".to_owned());
+        assert!(unknown_location.validate().is_err());
     }
 
     #[test]
     fn selects_the_open_data_population_workflow() {
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let root = crate::test_support::project_root();
         let config = ProjectConfig::load(root).unwrap();
         let selected = config
             .routes

@@ -1,4 +1,8 @@
 # AWHDL実装ガイド v0.2
+
+> **範囲と状態の正本（Phase 7、2026-09-23）:** v0.1 の実装範囲と各機能の実装状態は
+> [PROFILE_v0.1](docs/PROFILE_v0.1.md) の表だけが定める。本書はその要約であり、
+> 表と食い違う場合は表が優先する。本書は範囲を独自に定義しない。
 ## Project: AI Conductor / AWHDL / cvim
 
 日本語（正本） | [English reference translation](IMPLEMENTATION_GUIDE_v0.2.md)
