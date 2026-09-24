@@ -73,9 +73,11 @@ permissions, and safety boundaries. The H in AWHDL therefore does not mean
 Hardware. The language borrows useful design concepts from hardware
 description languages while describing harnesses for AI/MCP loops.
 
-This repository contains the draft v0.2 specification and a Milestone 1 Rust
-prototype. The prototype currently parses and structurally checks a small,
-documented subset; it does not yet execute AWHDL workflows.
+This repository contains the draft v0.2 specification and its Rust
+implementation. `aic check` parses and statically checks the v0.1 profile
+syntax, and `aiconductor run-design` binds a design to AI Conductor routes and
+executes it in delta cycles. For an introduction, see the Japanese
+[AWHDL tutorial (PDF)](docs/tutorial/awhdl_tutorial_ja.pdf).
 
 ## Project names
 
@@ -109,6 +111,7 @@ Parse and structural errors return a non-zero status and a source location.
 | Language specification | [English](docs/AWHDL_LANGUAGE_SPEC_v0.2.md) | [日本語](docs/AWHDL_LANGUAGE_SPEC_v0.2_ja.md) |
 | AI Conductor system specification | [English](docs/AI_CONDUCTOR_SYSTEM_SPEC_v0.2.md) | [日本語](docs/AI_CONDUCTOR_SYSTEM_SPEC_v0.2_ja.md) |
 | Getting started | [English](docs/GETTING_STARTED.md) | [日本語](docs/GETTING_STARTED_ja.md) |
+| Tutorial (TeX / PDF, examples verified on live devices) | — | [PDF](docs/tutorial/awhdl_tutorial_ja.pdf), [TeX](docs/tutorial/awhdl_tutorial_ja.tex) |
 | Implementation status | [English](docs/IMPLEMENTATION_STATUS.md) | [日本語](docs/IMPLEMENTATION_STATUS_ja.md) |
 | Security model | [English](docs/SECURITY_MODEL.md) | [日本語](docs/SECURITY_MODEL_ja.md) |
 | Design decisions | [English](docs/DESIGN_DECISIONS.md) | [日本語](docs/DESIGN_DECISIONS_ja.md) |

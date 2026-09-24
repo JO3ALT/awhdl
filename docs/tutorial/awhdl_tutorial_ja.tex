@@ -1,0 +1,583 @@
+% AWHDL チュートリアル（日本語）
+% ビルド: latexmk -lualatex awhdl_tutorial_ja.tex
+\documentclass[a4paper,11pt]{ltjsarticle}
+
+\usepackage{luatexja-fontspec}
+\usepackage{amsmath}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{tabularx}
+\usepackage{array}
+\usepackage[most]{tcolorbox}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,fit,shapes.geometric}
+\usepackage[hidelinks,pdfusetitle]{hyperref}
+\usepackage{geometry}
+\geometry{margin=24mm}
+
+\definecolor{kw}{RGB}{24,94,153}
+\definecolor{cm}{RGB}{94,109,126}
+\definecolor{st}{RGB}{39,137,126}
+\definecolor{bg}{RGB}{246,248,250}
+\definecolor{note}{RGB}{226,239,249}
+\definecolor{warn}{RGB}{251,239,222}
+
+\lstdefinelanguage{AWHDL}{
+  morekeywords={entity,architecture,is,of,port,in,out,inout,end,begin,
+    device,generic,signal,timer,period,budget,barrier,process,timeout,on,
+    if,then,elsif,else,parallel,assert,always,never,null,and,or,not,true,false},
+  sensitive=true,
+  morecomment=[l]{--},
+  morestring=[b]",
+}
+\lstset{
+  basicstyle=\ttfamily\small,
+  keywordstyle=\color{kw}\bfseries,
+  commentstyle=\color{cm}\itshape,
+  stringstyle=\color{st},
+  backgroundcolor=\color{bg},
+  frame=single,
+  rulecolor=\color{black!15},
+  numbers=left,
+  numberstyle=\tiny\color{cm},
+  xleftmargin=2em,
+  framexleftmargin=1.5em,
+  columns=fullflexible,
+  keepspaces=true,
+  breaklines=true,
+  showstringspaces=false,
+  tabsize=4,
+}
+\lstdefinestyle{shell}{language={},numbers=none,xleftmargin=0.5em,framexleftmargin=0em,
+  keywordstyle={},commentstyle={}}
+
+\newtcolorbox{point}[1][]{colback=note,colframe=kw!60,fonttitle=\bfseries,title=#1,breakable}
+\newtcolorbox{caution}[1][]{colback=warn,colframe=orange!70!black,fonttitle=\bfseries,title=#1,breakable}
+
+\newcommand{\ex}[1]{\texttt{examples/tutorial/#1}}
+
+\title{AWHDL チュートリアル\\\large Agentic Workflow Harness Description Language v0.1}
+\author{AI Conductor プロジェクト}
+\date{2026年9月24日}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+AWHDL は、複数の AI・MCP ツール・決定的プログラム・人間を組み合わせた反復ループを、
+型付き・イベント駆動の設計として記述する言語です。本チュートリアルでは、
+実機で動作を確認した 6 つの設計例を順にたどり、\texttt{entity}／\texttt{architecture}、
+device と route の束縛、signal と delta cycle、タイマーと予算、フィードバックループ、
+並列実行とバリア、情報フロー検査までを学びます。
+\end{abstract}
+
+\tableofcontents
+\clearpage
+
+%======================================================================
+\section{はじめに}
+
+\subsection{この文書の位置付け}
+
+本書は非規範の入門書です。v0.1 の実装範囲は \texttt{docs/PROFILE\_v0.1\_ja.md} だけが定め、
+言語・実行・安全の規則は LANGUAGE\_SPEC、RUNTIME\_SPEC、SECURITY\_SPEC、IR\_SPEC が定めます。
+本書の記述がそれらと食い違う場合は、規範文書が優先します。
+
+本書の例はすべて \ex{} にあり、2026年9月24日に次の 2 つで確認しました。
+\begin{itemize}
+  \item \texttt{aic check} による構文・構造・情報フローの静的検査
+  \item \texttt{aiconductor run-design} による実機での実行（27B モデル、Prolog、Lean、KDB を使用）
+\end{itemize}
+
+\subsection{AWHDL が解く問題}
+
+AI にツールを使わせる仕組みでは、「どの AI がどのデータを受け取るか」「いつ再試行し、いつ止めるか」
+「何をもって完了とするか」がプロンプトの中に埋もれがちです。AWHDL はこれらを設計として書き出し、
+実行前に検査できるようにします。
+
+\begin{point}[AWHDL の基本的な考え方]
+\begin{itemize}
+  \item AI やツールは \textbf{device}（入出力を持つ部品）として扱う。
+  \item データや状態は \textbf{signal} が運ぶ。
+  \item \textbf{process} はイベントに反応して動く。
+  \item 実行を続けてよいか、外部へ送ってよいか、完了したかは、AI ではなく
+        \textbf{AI Conductor ランタイム}が宣言された規則に従って決める。
+\end{itemize}
+\end{point}
+
+構文は VHDL に似ていますが、AWHDL はハードウェアを記述する言語ではありません。
+名前の H は Harness（複数の実行主体を一つの制御構造に束ねるもの）を表します。
+
+\subsection{全体の構成}
+
+\begin{center}
+\begin{tikzpicture}[
+  box/.style={draw,rounded corners,fill=bg,minimum width=30mm,minimum height=9mm,align=center,font=\small},
+  arr/.style={-{Stealth[length=2mm]},thick}]
+\node[box] (src) {AWHDL 設計\\\texttt{.awhdl}};
+\node[box,right=10mm of src] (chk) {\texttt{aic check}\\静的検査};
+\node[box,right=10mm of chk] (rt) {\texttt{run-design}\\束縛と delta cycle};
+\node[box,below=12mm of rt] (eng) {AI Conductor エンジン\\権限・Effect・承認・監査};
+\node[box,left=10mm of eng] (dev) {device\\LLM / MCP};
+\node[box,right=10mm of rt] (out) {出力 JSON};
+\draw[arr] (src) -- (chk);
+\draw[arr] (chk) -- (rt);
+\draw[arr] (rt) -- (out);
+\draw[arr] (rt) -- (eng);
+\draw[arr] (eng) -- (dev);
+\end{tikzpicture}
+\end{center}
+
+\texttt{run-design} は設計を検査・束縛したうえで delta cycle として実行します。
+device への呼び出しは、通常の実行と同じエンジンを通るため、権限（capability）の検査、
+Effect の記録、承認、監査ログがすべて適用されます。
+
+%======================================================================
+\section{準備}
+
+\subsection{必要なもの}
+
+\begin{itemize}
+  \item Rust（2024 edition）と Cargo
+  \item \texttt{awhdl} リポジトリ（本書の例とランタイムを含む）
+  \item 実行（\texttt{run-design}）には、AI Conductor のプロジェクトルートと、
+        そこで設定された route（モデルや MCP サーバー）
+\end{itemize}
+
+静的検査（\texttt{aic check}）だけなら、モデルや MCP サーバーは不要です。
+
+\subsection{ビルド}
+
+\begin{lstlisting}[style=shell]
+cd awhdl
+cargo build -p conductor-cli -p aiconductor
+# aic         : 構文と静的検査
+# aiconductor : AI Conductor ランタイム（run-design を含む）
+\end{lstlisting}
+
+AI Conductor のワークスペースでは、ビルド成果物を OneDrive の外に置くため、次の設定を使います。
+
+\begin{lstlisting}[style=shell]
+export CARGO_TARGET_DIR=~/.cache/aiconductor/cargo-target
+\end{lstlisting}
+
+以下では実行ファイルを \texttt{aic}、\texttt{aiconductor} と略記します。
+
+\subsection{検査と実行のコマンド}
+
+\begin{lstlisting}[style=shell]
+# 静的検査（終了状態 0 = 合格）
+aic check examples/tutorial/01_hello.awhdl
+aic check examples/tutorial/01_hello.awhdl --output json
+
+# 実行（--project-root は AI Conductor のルート）
+aiconductor --project-root <AIConductor> run-design \
+    awhdl/examples/tutorial/01_hello.awhdl --input 'task=...'
+\end{lstlisting}
+
+\texttt{--input 名前=値} は入力ポートに値を与えます。値が JSON として解釈できれば JSON、
+そうでなければ文字列になります。複数のポートには \texttt{--input} を繰り返します。
+
+\begin{table}[h]
+\centering
+\caption{\texttt{aic check} の終了状態}
+\begin{tabular}{cl}
+\toprule
+状態 & 意味 \\
+\midrule
+0 & 実装済みの検査に合格 \\
+1 & ソースファイルを読み取れない \\
+2 & 構文解析に失敗 \\
+3 & 構造または情報フローの検査に失敗 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+%======================================================================
+\section{最初の設計：entity と architecture}
+
+\subsection{設計}
+
+\lstinputlisting[language=AWHDL,caption={\ex{01\_hello.awhdl}}]{../../examples/tutorial/01_hello.awhdl}
+
+\begin{description}
+  \item[\texttt{entity}] 設計の外部インターフェースです。\texttt{port} に入力（\texttt{in}）と
+    出力（\texttt{out}）を並べます。
+  \item[型 \texttt{text<internal>}] 型名の後の \texttt{<\dots>} は\textbf{機密区分}です。
+    \texttt{public}、\texttt{internal}、\texttt{restricted} の 3 段階があり、第\ref{sec:flow}節の
+    情報フロー検査に使われます。
+  \item[\texttt{architecture}] entity の中身です。\texttt{is} と \texttt{begin} の間に宣言を、
+    \texttt{begin} と \texttt{end} の間に process を書きます。
+  \item[\texttt{device}] AI やツールを表す部品です。種類は \texttt{agent}、\texttt{mcp}、
+    \texttt{deterministic} の 3 つです。\texttt{generic} で、どの \textbf{route}
+    （AI Conductor の設定にある実行経路）に結び付けるか、どこで動くか（\texttt{location}）を宣言します。
+  \item[\texttt{process(task)}] 括弧内は\textbf{感度リスト}です。\texttt{task} が変化すると本体が実行されます。
+  \item[\texttt{coder.run(task) -> answer;}] device を呼び出し、結果を \texttt{answer} に書き込みます。
+    agent device の場合、メソッド名（ここでは \texttt{run}）は結果に影響しません。
+\end{description}
+
+\subsection{実行}
+
+\begin{lstlisting}[style=shell]
+aiconductor --project-root . run-design awhdl/examples/tutorial/01_hello.awhdl \
+  --input 'task=Rustで2つのi32を安全に足す関数を1つだけ書いてください。説明は1行で。'
+\end{lstlisting}
+
+\begin{lstlisting}[style=shell,caption={実行結果（27B モデル、約 4 秒）}]
+{
+  "status": "quiescent",
+  "reason": null,
+  "outputs": {
+    "answer": "```rust\nfn safe_add(a: i32, b: i32) -> Option<i32> {\n    a.checked_add(b)\n}\n```\n\n`checked_add` はオーバーフロー時に `None` を返すため、..."
+  },
+  "delta_cycles": 2,
+  "device_calls": 1
+}
+\end{lstlisting}
+
+\begin{description}
+  \item[\texttt{status}] \texttt{quiescent} は、処理すべきイベントがなくなって自然に終わったことを表します。
+    予算で打ち切られた場合は \texttt{exhausted} になり、\texttt{reason} に理由が入ります。
+  \item[\texttt{outputs}] 出力ポートの最終値です。
+  \item[\texttt{delta\_cycles}] 実行した delta cycle の数です（第\ref{sec:delta}節）。
+  \item[\texttt{device\_calls}] device を呼び出した回数です。
+\end{description}
+
+%======================================================================
+\section{決定的な判定：deterministic device と if}
+
+モデルの出力をそのまま「合格」とみなすと、モデルの誤りがそのまま結論になります。
+AWHDL では、ツールが返した構造化データを使って、判定を設計の中で決定的に行えます。
+
+\lstinputlisting[language=AWHDL,caption={\ex{02\_prolog\_verdict.awhdl}}]{../../examples/tutorial/02_prolog_verdict.awhdl}
+
+\begin{description}
+  \item[\texttt{deterministic}] 読み取り専用の MCP route にだけ結び付けられる device です。
+    書き込みを伴う route（MATLAB や KDB など）には \texttt{mcp} を使います。
+  \item[\texttt{signal result : data<internal>;}] 設計内部の信号です。MCP device の結果は
+    JSON オブジェクトで、\texttt{result.text}（ツールの出力文字列）や
+    \texttt{result.structured}（ツールが返した JSON）としてフィールドを読めます。
+  \item[\texttt{timeout 1 min}] 呼び出しの制限時間です。時間の単位は
+    \texttt{ms}、\texttt{sec}、\texttt{min}、\texttt{hour}、\texttt{day} です。
+  \item[\texttt{if \dots\ elsif \dots\ else \dots\ end if;}] 条件分岐です。
+  \item[\texttt{rules.failed}] 呼び出しが失敗したときに起きるイベントです。成功時は
+    \texttt{rules.done}、制限時間の超過時は \texttt{rules.timeout} と \texttt{rules.failed} が起きます。
+\end{description}
+
+\subsection{入力の渡し方}
+
+v0.1 の式にはオブジェクトを組み立てる構文がないため、device に渡すのは主に 1 つの文字列です。
+ツールの引数（Prolog のプログラムと問い合わせなど）は、ランタイムのアダプタが入力文字列から取り出します。
+Prolog では、バッククォートで囲んだ節の並びをプログラム、最後の単一のゴールを問い合わせとして扱います。
+
+\begin{lstlisting}[style=shell]
+aiconductor --project-root . run-design awhdl/examples/tutorial/02_prolog_verdict.awhdl \
+  --input 'task=`parent(tom,bob). parent(bob,ann). grandparent(X,Z) :- parent(X,Y), parent(Y,Z).` `grandparent(tom,ann).`'
+# => "verdict": "holds"          （delta_cycles 3, device_calls 1）
+
+aiconductor --project-root . run-design awhdl/examples/tutorial/02_prolog_verdict.awhdl \
+  --input 'task=`parent(tom,bob). grandparent(X,Z) :- parent(X,Y), parent(Y,Z).` `grandparent(tom,ann).`'
+# => "verdict": "does not hold"
+\end{lstlisting}
+
+\begin{point}[ポイント]
+「成り立つかどうか」は Prolog が返した \texttt{solution\_count} で決まり、モデルは関与しません。
+モデルに判断させるのは、決定的に判定できない部分だけにするのが AWHDL での基本的な設計です。
+\end{point}
+
+%======================================================================
+\section{delta cycle、タイマー、予算}\label{sec:delta}
+
+\subsection{delta cycle}
+
+AWHDL の実行は \textbf{delta cycle} の繰り返しです。1 つの delta cycle では次の順に処理します。
+
+\begin{enumerate}
+  \item 直前に起きたイベントに感度を持つ process を選ぶ。
+  \item 選んだ process をすべて、同じ時点の値のスナップショットに対して実行する。
+        process 内の代入（\texttt{<=}）や device の結果は、すぐには反映されない。
+  \item delta cycle の終わりに、書き込みをまとめて反映する。値が\textbf{実際に変わった} signal だけが
+        次のイベント（\texttt{名前} と \texttt{名前.changed}）を起こす。
+  \item 同じ delta cycle で 2 つの process が同じ signal に異なる値を書くとエラーになる。
+  \item \texttt{assert always}／\texttt{assert never} を評価する。
+\end{enumerate}
+
+イベントが残らず、タイマーもなければ、実行は \texttt{quiescent} で終わります。
+
+\subsection{タイマーと予算}
+
+\lstinputlisting[language=AWHDL,caption={\ex{03\_timer\_budget.awhdl}}]{../../examples/tutorial/03_timer_budget.awhdl}
+
+\begin{description}
+  \item[\texttt{timer tick : period 1 sec;}] 1 秒ごとに \texttt{tick} イベントを起こします。
+    タイマーを使う設計には、\texttt{iterations} か \texttt{wall\_time} の予算が必須です。
+  \item[\texttt{budget}] 実行の上限です。v0.1 で使える項目は \texttt{iterations}（delta cycle 数）、
+    \texttt{wall\_time}（経過時間）、\texttt{tool\_calls}、\texttt{model\_calls} です。
+  \item[\texttt{signal count : data<internal> := 0;}] 初期値付きの signal です。初期値は定数に限ります。
+  \item[\texttt{assert always (count <= 10);}] すべての delta cycle の終わりに成り立つべき条件です。
+    破られると実行は失敗します。
+\end{description}
+
+\begin{lstlisting}[style=shell,caption={実行結果（デバイスなし、約 3 秒）}]
+{ "status": "exhausted", "reason": "wall_time budget",
+  "outputs": { "ticks": 2 }, "delta_cycles": 6, "device_calls": 0 }
+\end{lstlisting}
+
+\begin{caution}[設計の予算とランタイムの予算]
+設計の \texttt{budget} は、AI Conductor の \texttt{config/runtime.toml}（\texttt{[loop]} 節）の上限を
+さらに狭めるだけで、広げることはできません。例えばランタイムの \texttt{max\_iterations} が 8 のとき、
+設計で \texttt{iterations <= 20} と書いても 8 delta cycle で打ち切られます。
+タイマー間隔を 500\,ms にすると、この例は設計の \texttt{wall\_time} より先に
+ランタイムの上限（\texttt{iteration budget exhausted}）で止まります。
+\end{caution}
+
+%======================================================================
+\section{フィードバックループ}
+
+検証して、結果によって再実行する。AWHDL では、このループをイベントの連鎖として書きます。
+
+\lstinputlisting[language=AWHDL,caption={\ex{04\_feedback\_loop.awhdl}}]{../../examples/tutorial/04_feedback_loop.awhdl}
+
+\begin{enumerate}
+  \item \texttt{code} が与えられると \texttt{round <= 1}。
+  \item \texttt{round} が変わるたびに、条件を満たせば KDB/q を呼ぶ。
+  \item 呼び出しが成功すると \texttt{q.done} が起き、\texttt{round} を 1 増やす。
+  \item \texttt{round} が 4 になると呼び出さなくなり、イベントが尽きて終わる。
+\end{enumerate}
+
+\begin{caution}[signal のイベントと device のイベント]
+signal のイベントは値が\textbf{変わったとき}だけ起きます。同じ計算を繰り返すと結果が変わらないため、
+\texttt{process(result)} ではループが 1 回で止まってしまいます。呼び出しの完了ごとに必ず起きる
+\texttt{q.done} を使うのはこのためです。
+\end{caution}
+
+\begin{lstlisting}[style=shell]
+aiconductor --project-root . run-design awhdl/examples/tutorial/04_feedback_loop.awhdl \
+  --input 'code=sum til 101'
+# => "rounds": 3, "last": "{ \"ok\": true, ... \"stdout\": \"5050\\n\" ... }"
+#    status quiescent, delta_cycles 8, device_calls 3
+\end{lstlisting}
+
+\texttt{tool\_calls <= 5} は、万一条件を書き誤っても呼び出しが 5 回を超えないための安全策です。
+\texttt{assert never (round > 4);} は「このループは 4 回目以降に進まない」という設計者の意図を、
+実行時に検査できる形で残します。
+
+%======================================================================
+\section{並列実行とバリア}
+
+独立した検査は同時に始め、両方がそろった時点で次へ進みたいことがあります。
+
+\lstinputlisting[language=AWHDL,caption={\ex{05\_parallel\_barrier.awhdl}}]{../../examples/tutorial/05_parallel_barrier.awhdl}
+
+\begin{description}
+  \item[\texttt{parallel \dots\ end parallel;}] 中の呼び出しは論理的に並列で、結果は同じ delta cycle の
+    終わりにまとめて反映されます（v0.1 のランタイムは実際には 1 つずつ順に呼び出します）。
+    2 つの分岐が同じ signal に書き込むことはできません（E215）。
+  \item[\texttt{barrier both (rule\_result, proof\_result);}] 列挙した signal がすべて書き込まれると
+    \texttt{both.ready} が起きます。
+\end{description}
+
+\begin{lstlisting}[style=shell]
+aiconductor --project-root . run-design awhdl/examples/tutorial/05_parallel_barrier.awhdl \
+  --input 'rules_task=`edge(a,b). path(X,Y) :- edge(X,Y).` `path(a,b).`' \
+  --input 'proof_task=theorem two : 1 + 1 = 2 := by rfl'
+# => "summary": "rules and proof both returned"   （device_calls 2）
+
+# 誤った定理を与えると Lean が拒否し、proof_result は書き込まれない
+  --input 'proof_task=theorem bad : 2 + 2 = 5 := by rfl'
+# => "summary": "the proof was rejected"
+\end{lstlisting}
+
+失敗した呼び出しは出力 signal に書き込まないため、バリアは成立しません。
+失敗は \texttt{prover.failed} で別に扱います。
+
+%======================================================================
+\section{情報フローと安全}\label{sec:flow}
+
+\subsection{機密区分と配置}
+
+signal とポートの型には機密区分（\texttt{public} < \texttt{internal} < \texttt{restricted}）を付けます。
+区分のない型は \texttt{restricted} として扱われます。device は \texttt{location}
+（\texttt{local} または \texttt{cloud}）を宣言し、route の実際の配置と一致しなければ束縛に失敗します。
+
+\lstinputlisting[language=AWHDL,caption={\ex{06\_information\_flow.awhdl}}]{../../examples/tutorial/06_information_flow.awhdl}
+
+\begin{lstlisting}[style=shell]
+$ aic check awhdl/examples/tutorial/06_information_flow.awhdl
+awhdl/examples/tutorial/06_information_flow.awhdl:14:9: AWHDL-E301: Restricted data cannot flow to cloud device reviewer
+$ echo $?
+3
+\end{lstlisting}
+
+\texttt{restricted} のデータがクラウドの device に流れる経路は、実行前に拒否されます。
+ランタイムも呼び出しの直前に同じ検査を行うため、静的検査をすり抜けた場合でも送信されません。
+
+\subsection{さらに厳しくする}
+
+\begin{itemize}
+  \item \texttt{assert never (internal -> cloud);} を書くと、\texttt{internal} 以上のデータも
+        クラウドへ送れなくなります。
+  \item device に \texttt{clearance => public} などを付けると、その device が受け取れる区分の上限を
+        決められます（超えると E302）。
+  \item 低い区分の signal に高い区分のデータを代入することはできません（E303）。
+        v0.1 には区分を下げる仕組み（declassifier）はありません。
+\end{itemize}
+
+\subsection{設計の外にある安全機構}
+
+次の規則は設計ではなく、AI Conductor の設定とランタイムが強制します。
+\begin{itemize}
+  \item \textbf{capability}：どの route がどのツール・ファイル・モデルを使えるか。
+        設定は \nolinkurl{config/capabilities.toml} にあります。
+  \item \textbf{Effect と承認}：書き込みを伴う呼び出しの記録と、外部への書き込み前の人間の承認。
+  \item \textbf{監査}：実行ごとの \texttt{.runtime/runs/<id>/events.jsonl}。
+\end{itemize}
+設計から device を呼び出すと、これらがすべて適用されます。
+設計の側からこれらを無効にする構文はありません。
+
+%======================================================================
+\section{device と route}
+
+\subsection{束縛の規則}
+
+\begin{table}[h]
+\centering\small
+\caption{device の種類と結び付けられる route}
+\begin{tabular}{lll}
+\toprule
+device の種類 & 結び付けられる route & 例 \\
+\midrule
+\texttt{agent} & モデルの route、または Codex & \texttt{initial\_coding}、\texttt{deep\_reasoning} \\
+\texttt{mcp} & MCP の route（Codex 以外） & \texttt{calculation\_graphing}、\texttt{table\_analysis} \\
+\texttt{deterministic} & 読み取り専用の MCP の route & \texttt{logic\_rules}、\texttt{logic\_proof}、\texttt{text\_filtering} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+主制御（planner）の route（\texttt{loop}）には結び付けられません。
+
+\subsection{AI Conductor の route（2026年9月時点）}
+
+{\small
+\begin{longtable}{p{44mm}p{27mm}p{72mm}}
+\toprule
+route & 種類 & 実行先 \\
+\midrule
+\endhead
+\texttt{initial\_coding} & モデル & 192.168.6.10 の RTX 4090（Qwen3.8 27B） \\
+\texttt{japanese\_polishing} & モデル & 192.168.6.10（llm-jp-4 8B） \\
+\texttt{vision} & モデル & 192.168.6.20 の RX 9060 XT（Qwen3-VL 8B） \\
+\texttt{logic\_rules} & MCP（読み取り） & 192.168.6.10 の SWI-Prolog \\
+\texttt{logic\_proof} & MCP（読み取り） & 192.168.6.10 の Lean 4.33.1 \\
+\texttt{text\_filtering} & MCP（読み取り） & ローカルの制限付き Filter \\
+\texttt{table\_analysis} & MCP（書き込み） & 192.168.6.10 の KDB/q \\
+\texttt{calculation\_graphing} & MCP（書き込み） & 192.168.6.10 の MATLAB R2026a \\
+\texttt{deep\_reasoning} & Codex（cloud） & Codex CLI（読み取り専用） \\
+\texttt{open\_data\_acquisition} & Codex（cloud） & Codex CLI（承認が必要な外部書き込み） \\
+\bottomrule
+\end{longtable}}
+
+\subsection{呼び出しと引数}
+
+\begin{itemize}
+  \item 引数が 1 つの文字列なら、それが device への入力になります。
+  \item MCP の route では、メソッド名がその route のツール名と一致すれば、そのツールを使います
+        （例：\texttt{rules.run\_prolog}、\texttt{prover.check\_lean\_code}、\texttt{q.run\_q}）。
+  \item ツールの引数はアダプタが入力から取り出します。Prolog はバッククォートの節と問い合わせ、
+        Lean は宣言（\texttt{theorem} など）、KDB は q のコード、Filter はプロジェクト内のパスです。
+  \item MATLAB と KDB では、日本語の文章をコードとして送ることはせず、呼び出しを失敗させます。
+\end{itemize}
+
+%======================================================================
+\section{v0.1 で使えないもの}
+
+次の構文は v0.1 に含まれず、構文エラーとして拒否されます。黙って受理されることはありません。
+\begin{itemize}
+  \item \texttt{case}、\texttt{await}、\texttt{type} 宣言と状態機械、\texttt{retry}、\texttt{approve}、
+        \texttt{policy}、\texttt{export}、\texttt{configuration}、時相アサーション
+  \item Event 宣言と完了条件（\texttt{completion when hard \{\dots\}}）の構文。意味論は実装済みで、
+        完了条件は現在 \texttt{config/routing-defaults.toml} で与えます。
+  \item 機密区分 \texttt{confidential}／\texttt{secret}、配置 \texttt{sandbox}／\texttt{private\_cloud}／\texttt{external}（E401）
+\end{itemize}
+
+%======================================================================
+\appendix
+\section{文法の早見表}
+
+\begin{lstlisting}[language=AWHDL]
+entity name is
+    port ( a : in text<internal>; b : out data<public> );
+end name;
+
+architecture arch of name is
+    device d : agent | mcp | deterministic
+        generic (route => "<route>", location => local | cloud,
+                 clearance => public | internal | restricted);
+    signal s1, s2 : data<internal> := 0;
+    timer t : period 1 sec;
+    budget lim is iterations <= 10; wall_time <= 5 min;
+                  tool_calls <= 3; model_calls <= 2; end budget;
+    barrier bar (s1, s2);
+begin
+    assert always (<expr>);
+    assert never (<expr>);
+    assert never (internal -> cloud);
+
+    process(a, s1.changed, d.done, d.failed, d.timeout, t, bar.ready)
+        timeout 2 min;
+    begin
+        d.method(<expr>) timeout 30 sec -> s1;
+        s2 <= s1 + 1;
+        if <expr> then null; elsif <expr> then null; else null; end if;
+        parallel d.m1(a) -> s1; d.m2(a) -> s2; end parallel;
+        assert <expr>;
+    on timeout
+        b <= "timed out";
+    end process;
+end arch;
+\end{lstlisting}
+
+式の結合は弱い順に \texttt{or}、\texttt{and}、\texttt{not}、比較（\texttt{=}、\texttt{/=}、\texttt{<}、
+\texttt{<=}、\texttt{>}、\texttt{>=}）、整数の \texttt{+}／\texttt{-} です。
+比較は数値どうし、または文字列どうしで行います。
+
+\section{診断コード}
+
+\begin{longtable}{lp{108mm}}
+\toprule
+コード & 意味 \\
+\midrule
+\endhead
+E001 & ソースファイルを読み取れない \\
+E101 & 構文エラー \\
+E201--E205 & 重複した entity・ポート・device・宣言、未知の entity \\
+E206 & 感度リストの未知の名前 \\
+E207／E208／E209 & 未知の device、未知の出力先 \\
+E210 & 式の中の未知の名前 \\
+E211 & 正でない時間（タイマー周期、制限時間） \\
+E212 & 不正または重複した予算項目 \\
+E214 & signal でないバリアのメンバー \\
+E215 & 2 つの parallel 分岐が同じ signal に書き込む \\
+E217 & 入力ポートへの書き込み \\
+E218 & device の generic の重複や型の誤り \\
+E301 & クラウドの device へ流せないデータ \\
+E302 & device の clearance を超えるデータ \\
+E303 & 高い区分のデータを低い区分の signal に保存 \\
+E401 & v0.1 の Profile に含まれない構成要素 \\
+E402 & 未知の名前（区分、配置など） \\
+\bottomrule
+\end{longtable}
+
+\section{参考文献}
+
+\begin{itemize}
+  \item \texttt{awhdl/docs/PROFILE\_v0.1\_ja.md}：v0.1 の範囲と実装状況（正本）
+  \item \texttt{awhdl/docs/LANGUAGE\_SPEC\_ja.md}、\texttt{AWHDL\_LANGUAGE\_SPEC\_v0.2\_ja.md}：言語仕様
+  \item \texttt{awhdl/docs/RUNTIME\_SPEC\_ja.md}：delta cycle、Effect、完了評価
+  \item \texttt{awhdl/docs/SECURITY\_SPEC\_ja.md}：機密区分、capability、承認
+  \item \texttt{awhdl/docs/GETTING\_STARTED\_ja.md}：最初の一歩
+\end{itemize}
+
+\end{document}

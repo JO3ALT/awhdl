@@ -55,3 +55,8 @@ Milestone 1の`aic check`が検査するのは、解析、宣言構造、名前�
 | 3 | 構造検査に失敗 |
 
 Milestone 1の検査に合格しても、v0.2言語全体やセキュリティポリシーが検証されたことにはなりません。[実装状況](IMPLEMENTATION_STATUS_ja.md)を参照してください。
+
+## 次へ
+
+実機の device を使った実行、delta cycle、予算、フィードバックループ、並列実行、情報フロー検査は
+[AWHDL チュートリアル](tutorial/awhdl_tutorial_ja.pdf)（例は `examples/tutorial/`）で順に説明しています。

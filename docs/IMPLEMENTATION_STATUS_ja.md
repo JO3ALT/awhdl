@@ -115,3 +115,18 @@ structural checker は変更していない。[Runtime](RUNTIME_SPEC_ja.md)、
 [PROFILE_v0.1](PROFILE_v0.1_ja.md) の表だけが定め、テストがコードとの対応を検査する。
 本書はその要約。規範文書は LANGUAGE_SPEC・RUNTIME_SPEC・SECURITY_SPEC・IR_SPEC・
 PROFILE_v0.1。[設計判断](REFINEMENT_DECISIONS_ja.md)、[移行](MIGRATION_PHASE_7.md) を参照。
+
+## 運用上の追加（2026-09-24、Profile の範囲外・非規範）
+
+AI Conductor の運用のためにランタイムへ次を加えた。言語の構文と PROFILE_v0.1 の表は変えていない。
+
+- `ssh_target` が空のホストの起動プロファイルをローカルで起動する。SSH トンネルに接続タイムアウトを付けた。
+- 主制御（planner）は既定モデルが使えないとき、`loop` route の予備モデルへ順に切り替える。
+  `aiconductor run --controller <profile>` は予備なしでそのモデルだけを使い、`--decider on|off` で判断器を切り替える。
+- 任意の判断器（`runtime.toml` の `[decider]`、`model.decide` capability が必要）：System One 型の判断モデルが
+  次の action を確率付きで選び、LLM はその action の引数だけを埋める。確信度が低いときは LLM が判断する。
+- `location = "cloud"` の route は、指示に `cloud_opt_in_marker` がある場合だけ planner に提示する。workflow は対象外。
+- アダプタ：Lean・Prolog・MATLAB のプロジェクトファイルはランタイムが読んでコードとして送る。指示中のコード
+  （バッククォート）から引数を補う。KDB（`run_q`）と Filter（`list_files`・`preview_file`）の専用アダプタを追加し、
+  日本語の文章をコードとして送らない。
+- 主制御のベンチマーク（AI Conductor 側の `bench/controller/`）で比較した結果、既定の主制御を 27B モデルとした。

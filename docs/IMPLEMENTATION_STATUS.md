@@ -135,3 +135,26 @@ a test keeps consistent with the code. This file summarizes it. Normative:
 LANGUAGE_SPEC, RUNTIME_SPEC, SECURITY_SPEC, IR_SPEC, PROFILE_v0.1. See
 [design decisions](REFINEMENT_DECISIONS_ja.md) and
 [migration](MIGRATION_PHASE_7.md).
+
+## Operational additions (2026-09-24, outside the profile, non-normative)
+
+For AI Conductor operations the runtime gained the following; the language
+syntax and the PROFILE_v0.1 matrix are unchanged.
+
+- Launch profiles on hosts without `ssh_target` start locally; SSH tunnels
+  have a connect timeout.
+- The planner falls back through the `loop` route's fallback models.
+  `aiconductor run --controller <profile>` uses only that model, and
+  `--decider on|off` toggles the decider.
+- Optional decider (`[decider]` in `runtime.toml`, needs the `model.decide`
+  capability): a System One style decision model picks the next action with
+  probabilities and the LLM only fills its arguments; low confidence hands
+  the decision back to the LLM.
+- Routes with `location = "cloud"` are offered to the planner only when the
+  instruction contains `cloud_opt_in_marker`; workflows are unaffected.
+- Adapters: Lean, Prolog and MATLAB project files are read by the runtime
+  and sent as code; arguments are recovered from backtick code in the
+  instruction; new KDB (`run_q`) and Filter (`list_files`, `preview_file`)
+  adapters; Japanese prose is never sent as code.
+- The AI Conductor controller benchmark (`bench/controller/`) led to the 27B
+  model as the default controller.

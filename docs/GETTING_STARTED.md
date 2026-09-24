@@ -61,3 +61,10 @@ and output targets. It does not invoke `llm` or any other device.
 Passing Milestone 1 checks does not imply that the full v0.2 language or its
 security policies have been validated. See
 [Implementation status](IMPLEMENTATION_STATUS.md).
+
+## Next
+
+Running designs on live devices, delta cycles, budgets, feedback loops,
+parallel calls and information-flow checks are covered step by step in the
+Japanese [AWHDL tutorial](tutorial/awhdl_tutorial_ja.pdf) (examples in
+`examples/tutorial/`).

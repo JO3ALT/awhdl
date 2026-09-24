@@ -6,7 +6,7 @@
 
 **AWHDLはAgentic Workflow Harness Description Language（エージェント型ワークフロー・ハーネス記述言語）の略称です。** 複数のAI、エージェント、MCPツール、決定的プログラム、そして人間を組み合わせた**反復ループを設計するための言語**です。VHDLの考え方を参考に、AIワークフローを型付き・イベント駆動のシステムとして記述します。
 
-本リポジトリには、ドラフトv0.2仕様とMilestone 1のRust製プロトタイプが含まれます。現在のプロトタイプは、文書化された小さな構文部分を解析し、構造検査を行います。AWHDLワークフローの実行機能はまだ実装していません。
+本リポジトリには、ドラフトv0.2仕様とRust製の実装が含まれます。`aic check` が v0.1 Profile の構文を解析・静的検査し、`aiconductor run-design` が設計を AI Conductor の route に束縛して delta cycle で実行します。入門には [AWHDL チュートリアル（PDF）](docs/tutorial/awhdl_tutorial_ja.pdf) を参照してください。
 
 ## AWHDLが目指すもの
 
@@ -70,6 +70,7 @@ cargo run -p conductor-cli -- check examples/hello.awhdl --output json
 | AWHDL言語仕様 | [日本語](docs/AWHDL_LANGUAGE_SPEC_v0.2_ja.md) | [English](docs/AWHDL_LANGUAGE_SPEC_v0.2.md) |
 | AI Conductorシステム仕様 | [日本語](docs/AI_CONDUCTOR_SYSTEM_SPEC_v0.2_ja.md) | [English](docs/AI_CONDUCTOR_SYSTEM_SPEC_v0.2.md) |
 | はじめに | [日本語](docs/GETTING_STARTED_ja.md) | [English](docs/GETTING_STARTED.md) |
+| チュートリアル（TeX / PDF、実機で確認した例つき） | [PDF](docs/tutorial/awhdl_tutorial_ja.pdf)・[TeX](docs/tutorial/awhdl_tutorial_ja.tex) | — |
 | 実装状況 | [日本語](docs/IMPLEMENTATION_STATUS_ja.md) | [English](docs/IMPLEMENTATION_STATUS.md) |
 | セキュリティモデル | [日本語](docs/SECURITY_MODEL_ja.md) | [English](docs/SECURITY_MODEL.md) |
 | 設計判断 | [日本語](docs/DESIGN_DECISIONS_ja.md) | [English](docs/DESIGN_DECISIONS.md) |
