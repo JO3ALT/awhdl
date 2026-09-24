@@ -62,7 +62,7 @@ provider がその操作を行わなかったという信頼された照合の�
 Effect は (generation, operation, action, resource, payload_hash) ごとに最大1つである。restore は、永続化された
 `STARTED` をメモリ上で `UNCERTAIN` に変える前に、Effect の identity と scope、key、記述の形、結果と状態の整合、
 参照する invocation を検査する。`RunStore::open` はその復旧の遷移を永続化する。retry と機密性の規則は
-[Phase 3 の移行メモ](MIGRATION_PHASE_3.md) を参照。
+[Phase 3 の移行メモ](MIGRATION_PHASE_3_ja.md) を参照。
 
 ## 承認（v4）
 
@@ -84,7 +84,7 @@ Effect は (generation, operation, action, resource, payload_hash) ごとに最�
 この符号化は本 runtime において決定的であるが、RFC 8785 JCS であるとは主張しない。`capability` は Effect を認可した
 capability の handle である（Phase 5）。restore はすべての承認の hash を対応する Effect から計算し直し、不一致を
 拒否する。また、承認が必要な Effect のすべての dispatch が、ちょうど1つの承認の `consumed_by` であることを要求する。
-[Phase 4 の移行メモ](MIGRATION_PHASE_4.md) を参照。
+[Phase 4 の移行メモ](MIGRATION_PHASE_4_ja.md) を参照。
 
 ## Capability の bind（v5）
 
@@ -93,7 +93,7 @@ fingerprint は grant の権限範囲（`id`、`action`、`resource`、`constrai
 含まない）の SHA-256 の先頭 16 文字である。policy の判断を経ずに runtime API で作った Effect は `unscoped` を持つ。
 承認の `capability` は Effect の handle と等しいため、grant の範囲が変われば action hash が変わり、承認は失効する。
 同じ instance を別の handle で予約し直すことはできない。grant 自体は checkpoint ではなく設定
-（`config/capabilities.toml`）にある。[Phase 5 の移行メモ](MIGRATION_PHASE_5.md) を参照。
+（`config/capabilities.toml`）にある。[Phase 5 の移行メモ](MIGRATION_PHASE_5_ja.md) を参照。
 
 ## コンパイル済み設計
 

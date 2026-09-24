@@ -1,5 +1,10 @@
 # Phase 6 migration and verification
 
+[日本語（正本）](MIGRATION_PHASE_6_ja.md) | English reference translation
+
+> The Japanese version is canonical. This English version is a reference
+> translation; where they differ, the Japanese version prevails.
+
 Phase 6 separates deterministic (hard) completion conditions from
 model-generated (soft) signals. The checkpoint format is unchanged (v5);
 completion policy lives in configuration and each evaluation is audited.

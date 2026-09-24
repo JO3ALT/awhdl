@@ -1,5 +1,10 @@
 # Phase 3 migration and verification
 
+[日本語（正本）](MIGRATION_PHASE_3_ja.md) | English reference translation
+
+> The Japanese version is canonical. This English version is a reference
+> translation; where they differ, the Japanese version prevails.
+
 > Superseded for the checkpoint format by [Phase 4](MIGRATION_PHASE_4.md) (v4).
 
 Phase 3 adds a durable Effect journal and write retry rules. The authoritative

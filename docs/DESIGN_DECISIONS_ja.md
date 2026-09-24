@@ -39,7 +39,7 @@ ASTはすでに機密区分の表記とソース上のバイト範囲を保持�
 
 Integration runtime identity, checkpoint and barrier APIs are implemented separately
 from the AWHDL compiler. See [decisions](REFINEMENT_DECISIONS_ja.md) and
-[migration / limits](MIGRATION_PHASE_1.md). This does not add AWHDL
+[migration / limits](MIGRATION_PHASE_1_ja.md). This does not add AWHDL
 compile/run, signal scheduling or a CLI resume command. Workspace verification
 passed on 2026-09-23: 33 tests, format check and Clippy with warnings denied.
 
@@ -50,7 +50,7 @@ checkpoint v2 に最新値・イベント履歴と消費記録・呼び出し結
 全 device 完了で lifecycle Event を生成するが、serial engine は既存の return を使う。
 AWHDL scheduler・delta-cycle 実行・新構文・CLI resume は未実装。
 [Runtime](RUNTIME_SPEC_ja.md)、[設計判断](REFINEMENT_DECISIONS_ja.md)、
-[移行](MIGRATION_PHASE_2.md)、
+[移行](MIGRATION_PHASE_2_ja.md)、
 検証 を参照。
 
 ## Phase 3 仕様整理（2026-09-23）
@@ -61,7 +61,7 @@ AWHDL scheduler・delta-cycle 実行・新構文・CLI resume は未実装。
 確認済みの重複呼び出しは保存結果を返す。
 checkpoint v3 は Effect identity と状態を保存する。parser / AST / structural
 checker は変更していない。[Runtime](RUNTIME_SPEC_ja.md)、
-[設計判断](REFINEMENT_DECISIONS_ja.md)、[移行](MIGRATION_PHASE_3.md)、
+[設計判断](REFINEMENT_DECISIONS_ja.md)、[移行](MIGRATION_PHASE_3_ja.md)、
 検証 を参照。
 
 ## Phase 4 仕様整理（2026-09-23）
@@ -71,7 +71,7 @@ checker は変更していない。[Runtime](RUNTIME_SPEC_ja.md)、
 destructive は既定で承認必須、`open_data_acquisition` は明示的に除外。承認 adapter は
 未接続のため承認必須 action は fail closed。checkpoint v4。parser / AST / structural
 checker は変更していない。[Runtime](RUNTIME_SPEC_ja.md)、
-[設計判断](REFINEMENT_DECISIONS_ja.md)、[移行](MIGRATION_PHASE_4.md)、
+[設計判断](REFINEMENT_DECISIONS_ja.md)、[移行](MIGRATION_PHASE_4_ja.md)、
 検証 を参照。
 
 ## Phase 5 仕様整理（2026-09-23）
@@ -82,7 +82,7 @@ class が tool 単位で journal・承認を決め、route の class は上限�
 ファイルパスは正規化し許可されたパスに限る。Effect と承認は capability handle に bind。
 checkpoint v5。parser / AST / structural checker は変更していない。
 [Runtime](RUNTIME_SPEC_ja.md)、[設計判断](REFINEMENT_DECISIONS_ja.md)、
-[移行](MIGRATION_PHASE_5.md)、検証 を参照。
+[移行](MIGRATION_PHASE_5_ja.md)、検証 を参照。
 
 ## Phase 6 仕様整理（2026-09-23）
 
@@ -90,7 +90,7 @@ planner の完了宣言は評価の依頼にすぎず、runtime が state machin
 typed adapter 出力から判定する。hard 条件は決定的、model 由来は soft、外部書き込みを含む
 workflow は safety-critical。設定のみで checkpoint は v5 のまま。parser / AST /
 structural checker は変更していない。[Runtime](RUNTIME_SPEC_ja.md)、
-[設計判断](REFINEMENT_DECISIONS_ja.md)、[移行](MIGRATION_PHASE_6.md)、
+[設計判断](REFINEMENT_DECISIONS_ja.md)、[移行](MIGRATION_PHASE_6_ja.md)、
 検証 を参照。
 
 ## Phase 7 v0.1 Profile（2026-09-23）
@@ -98,7 +98,7 @@ structural checker は変更していない。[Runtime](RUNTIME_SPEC_ja.md)、
 文書を役割ごとに再編した。v0.1 の範囲と各機能の状態は
 [PROFILE_v0.1](PROFILE_v0.1_ja.md) の表だけが定め、テストがコードとの対応を検査する。
 本書はその要約。規範文書は LANGUAGE_SPEC・RUNTIME_SPEC・SECURITY_SPEC・IR_SPEC・
-PROFILE_v0.1。[設計判断](REFINEMENT_DECISIONS_ja.md)、[移行](MIGRATION_PHASE_7.md) を参照。
+PROFILE_v0.1。[設計判断](REFINEMENT_DECISIONS_ja.md)、[移行](MIGRATION_PHASE_7_ja.md) を参照。
 
 ## v0.1 backlog の実装（2026-09-23）
 

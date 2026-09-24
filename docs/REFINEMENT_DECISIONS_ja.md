@@ -68,7 +68,7 @@ test / Clippy は `--offline` で実施し、Clippy は警告をエラーとし�
   capability enforcement が新たに実装されたという主張はしない。
 
 検証結果と共通チェックは 進捗、移行制約は
-[MIGRATION_PHASE_2.md](MIGRATION_PHASE_2.md) に記録する。
+[MIGRATION_PHASE_2_ja.md](MIGRATION_PHASE_2_ja.md) に記録する。
 
 ## Phase 3 — 2026-09-23
 
@@ -105,7 +105,7 @@ test / Clippy は `--offline` で実施し、Clippy は警告をエラーとし�
   Effect 記録を捏造しない。audit JSONL には metadata（hash・class 等）のみを追加する。
 
 検証結果は 進捗、移行制約は
-[MIGRATION_PHASE_3.md](MIGRATION_PHASE_3.md) に記録する。
+[MIGRATION_PHASE_3_ja.md](MIGRATION_PHASE_3_ja.md) に記録する。
 
 ## Phase 4 — 2026-09-23
 
@@ -137,7 +137,7 @@ test / Clippy は `--offline` で実施し、Clippy は警告をエラーとし�
   audit には ID・hash・状態のみ記録し、引数は記録しない。
 
 検証結果は 進捗、移行制約は
-[MIGRATION_PHASE_4.md](MIGRATION_PHASE_4.md) に記録する。
+[MIGRATION_PHASE_4_ja.md](MIGRATION_PHASE_4_ja.md) に記録する。
 
 ## Phase 5 — 2026-09-23
 
@@ -169,7 +169,7 @@ test / Clippy は `--offline` で実施し、Clippy は警告をエラーとし�
   credential broker は実装しない。`mcp-servers.toml` の `capability` 文字列は説明のみ。
 
 検証結果は 進捗、移行制約は
-[MIGRATION_PHASE_5.md](MIGRATION_PHASE_5.md) に記録する。
+[MIGRATION_PHASE_5_ja.md](MIGRATION_PHASE_5_ja.md) に記録する。
 
 ## Phase 6 — 2026-09-23
 
@@ -193,7 +193,7 @@ test / Clippy は `--offline` で実施し、Clippy は警告をエラーとし�
 - 最終回答の文章は依然 LLM 生成で、hard 条件はその正確さを保証しない。
 
 検証結果は 進捗、移行制約は
-[MIGRATION_PHASE_6.md](MIGRATION_PHASE_6.md) に記録する。
+[MIGRATION_PHASE_6_ja.md](MIGRATION_PHASE_6_ja.md) に記録する。
 
 ## Phase 7 — 2026-09-23
 

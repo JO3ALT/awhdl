@@ -1,5 +1,10 @@
 # Phase 4 migration and verification
 
+[日本語（正本）](MIGRATION_PHASE_4_ja.md) | English reference translation
+
+> The Japanese version is canonical. This English version is a reference
+> translation; where they differ, the Japanese version prevails.
+
 > Superseded for the checkpoint format by [Phase 5](MIGRATION_PHASE_5.md) (v5).
 
 Phase 4 binds human approval to one exact Effect instance. The authoritative

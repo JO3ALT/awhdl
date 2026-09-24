@@ -1,5 +1,10 @@
 # Phase 7 migration
 
+[日本語（正本）](MIGRATION_PHASE_7_ja.md) | English reference translation
+
+> The Japanese version is canonical. This English version is a reference
+> translation; where they differ, the Japanese version prevails.
+
 Phase 7 changes documents and adds one consistency test; runtime behavior,
 configuration and the checkpoint format (v5) are unchanged.
 

@@ -1,5 +1,10 @@
 # Phase 1 migration and verification
 
+[日本語（正本）](MIGRATION_PHASE_1_ja.md) | English reference translation
+
+> The Japanese version is canonical. This English version is a reference
+> translation; where they differ, the Japanese version prevails.
+
 Historical Phase 1 record. Phase 2 supersedes the checkpoint format and adds
 payload-bearing dataflow storage; see [Phase 2 migration](MIGRATION_PHASE_2.md).
 

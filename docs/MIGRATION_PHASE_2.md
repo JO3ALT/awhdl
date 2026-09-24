@@ -1,5 +1,10 @@
 # Phase 2 migration and boundaries
 
+[日本語（正本）](MIGRATION_PHASE_2_ja.md) | English reference translation
+
+> The Japanese version is canonical. This English version is a reference
+> translation; where they differ, the Japanese version prevails.
+
 Historical Phase 2 record. Phase 3 supersedes checkpoint format v2 and adds
 the Effect journal; see [Phase 3 migration](MIGRATION_PHASE_3.md).
 

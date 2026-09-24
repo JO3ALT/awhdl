@@ -1,5 +1,10 @@
 # Phase 5 migration and verification
 
+[日本語（正本）](MIGRATION_PHASE_5_ja.md) | English reference translation
+
+> The Japanese version is canonical. This English version is a reference
+> translation; where they differ, the Japanese version prevails.
+
 Phase 5 unifies tool, filesystem, sandbox, network and model permissions into
 one parameterized capability model. The authoritative checkpoint is now
 [`execution-v5.schema.json`](schema/execution-v5.schema.json). Formats v1–v4
