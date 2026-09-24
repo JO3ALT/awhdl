@@ -20,6 +20,8 @@ impl AdapterKind {
             "matlab" | "evaluate_matlab_code" | "run_matlab_file" | "run_matlab_test_file" => {
                 Ok(Self::Matlab)
             }
+            "kdb" | "run_q" => Ok(Self::Kdb),
+            "filter" | "list_files" | "preview_file" => Ok(Self::Filter),
             "passthrough" => Ok(Self::Passthrough),
             other => bail!("unknown MCP adapter: {other}"),
         }
@@ -71,6 +73,8 @@ pub fn prepare_call(config: &ProjectConfig, source: AdapterInput<'_>) -> Result<
         AdapterKind::Lean => prepare_lean(config, &tool, &source, &mut arguments)?,
         AdapterKind::Prolog => prepare_prolog(config, &tool, &source, &mut arguments)?,
         AdapterKind::Matlab => prepare_matlab(config, &tool, &source, &mut arguments)?,
+        AdapterKind::Kdb => prepare_kdb(&tool, &source, &mut arguments)?,
+        AdapterKind::Filter => prepare_filter(config, &tool, &source, &mut arguments)?,
         AdapterKind::Passthrough => None,
     };
     if let Some(rewritten) = rewritten {
@@ -142,6 +146,9 @@ fn resolve_tool(
     {
         return Ok(explicit.clone());
     }
+    if let Some(tool) = infer_tool_from_keywords(route, &source_text) {
+        return Ok(tool);
+    }
     let inferred = [
         ("run_prolog_file", [".pl", ".pro", ".prolog"].as_slice()),
         ("check_lean_file", [".lean"].as_slice()),
@@ -163,6 +170,24 @@ fn resolve_tool(
         .first()
         .cloned()
         .context("MCP action has no preferred tool")
+}
+
+/// Tools named by what the operator asks for rather than by a file type.
+fn infer_tool_from_keywords(route: &ActionConfig, source_text: &str) -> Option<String> {
+    const HINTS: [(&str, &[&str]); 2] = [
+        (
+            "list_files",
+            &["一覧", "ファイル名", "list files", "listing"],
+        ),
+        ("preview_file", &["プレビュー", "中身", "先頭", "preview"]),
+    ];
+    HINTS
+        .iter()
+        .find(|(tool, words)| {
+            route.preferred_tools.iter().any(|item| item == tool)
+                && words.iter().any(|word| source_text.contains(word))
+        })
+        .map(|(tool, _)| (*tool).to_owned())
 }
 
 /// Codex sandbox and network settings expressed as capability requests.
@@ -318,12 +343,24 @@ fn find_lean_code<'a>(candidates: impl IntoIterator<Item = &'a str>) -> Option<S
             }
         }
 
+        let is_declaration =
+            |text: &str| DECLARATIONS.iter().any(|marker| text.starts_with(marker));
+        if let Some(span) = code_spans(candidate)
+            .into_iter()
+            .find(|span| is_declaration(span))
+        {
+            return Some(span);
+        }
+
         if let Some(start) = DECLARATIONS
             .iter()
             .filter_map(|marker| candidate.find(marker))
             .min()
         {
-            return Some(candidate[start..].trim().to_owned());
+            // Source quoted inline ends at the closing backtick.
+            let tail = &candidate[start..];
+            let end = tail.find('`').unwrap_or(tail.len());
+            return Some(tail[..end].trim().to_owned());
         }
     }
     None
@@ -394,7 +431,13 @@ fn prepare_matlab(
         "evaluate_matlab_code" => {
             if !object.contains_key("code") {
                 let code = find_matlab_run([source.input, source.source_instruction])
-                    .unwrap_or_else(|| source.input.to_owned());
+                    .or_else(|| {
+                        find_code_span([source.input, source.source_instruction], |span| {
+                            span.contains('(') || span.contains('=')
+                        })
+                    })
+                    .or_else(|| (!has_cjk(source.input)).then(|| source.input.to_owned()))
+                    .context("evaluate_matlab_code needs MATLAB code in arguments.code")?;
                 required_text(object, "code", &code)?;
             }
             Ok(None)
@@ -414,6 +457,116 @@ fn prepare_matlab(
 }
 
 const MAX_MATLAB_SCRIPT_BYTES: u64 = 256 * 1024;
+
+/// q code for `run_q`: the planner's, a backtick span, or plain-ASCII input.
+/// Operator prose is never sent as code.
+fn prepare_kdb(
+    tool: &str,
+    source: &AdapterInput<'_>,
+    object: &mut Map<String, Value>,
+) -> Result<Option<String>> {
+    if tool == "run_q" && !object.contains_key("code") {
+        let code = find_code_span([source.input, source.source_instruction], |span| {
+            !span.contains('/') || span.contains(' ')
+        })
+        .or_else(|| (!has_cjk(source.input)).then(|| source.input.to_owned()))
+        .context("run_q needs q code in arguments.code")?;
+        required_text(object, "code", &code)?;
+    }
+    Ok(None)
+}
+
+/// Directory and file arguments for the Filter tools, from project paths
+/// named in the instruction. A pipeline without stages is re-targeted to
+/// listing or preview when the instruction asks for that.
+fn prepare_filter(
+    config: &ProjectConfig,
+    tool: &str,
+    source: &AdapterInput<'_>,
+    object: &mut Map<String, Value>,
+) -> Result<Option<String>> {
+    let inputs = [source.input, source.source_instruction];
+    let mut tool = tool.to_owned();
+    let mut rewritten = None;
+    if tool == "run_filter_pipeline" && !object.contains_key("stages") {
+        let text = format!("{}\n{}", source.input, source.source_instruction).to_lowercase();
+        // The planner's own arguments name the tool it meant.
+        let from_arguments = if object.contains_key("path") {
+            Some("preview_file".to_owned())
+        } else if object.contains_key("subdir") {
+            Some("list_files".to_owned())
+        } else {
+            None
+        };
+        if let Some(inferred) =
+            from_arguments.or_else(|| infer_tool_from_keywords(source.route, &text))
+        {
+            tool = inferred.clone();
+            rewritten = Some(inferred);
+        }
+    }
+    match tool.as_str() {
+        "list_files" if !object.contains_key("subdir") => {
+            if let Some(dir) = find_project_entry(config, inputs, true) {
+                object.insert("subdir".to_owned(), Value::String(dir));
+            }
+        }
+        "preview_file" if !object.contains_key("path") => {
+            let file = find_project_entry(config, inputs, false)
+                .context("preview_file needs a project file path")?;
+            object.insert("path".to_owned(), Value::String(file));
+        }
+        "csv_summary" | "group_by_count" if !object.contains_key("input_file") => {
+            if let Some(file) = find_project_path(inputs, &[".csv"]) {
+                object.insert("input_file".to_owned(), Value::String(file));
+            }
+        }
+        _ => {}
+    }
+    Ok(rewritten)
+}
+
+/// The first project-relative path in the inputs that names an existing
+/// directory (`want_dir`) or file.
+fn find_project_entry<const N: usize>(
+    config: &ProjectConfig,
+    inputs: [&str; N],
+    want_dir: bool,
+) -> Option<String> {
+    inputs.into_iter().find_map(|input| {
+        let normalized = input.replace('\\', "/");
+        let mut rest = normalized.as_str();
+        while let Some(start) = ["examples/", ".runtime/"]
+            .iter()
+            .filter_map(|prefix| rest.find(prefix))
+            .min()
+        {
+            let tail = &rest[start..];
+            let end = tail
+                .find(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '_' | '-')))
+                .unwrap_or(tail.len());
+            let candidate = tail[..end].trim_end_matches(['.', '/']);
+            let path = config.resolve_path(candidate);
+            if !candidate.contains("..")
+                && (if want_dir {
+                    path.is_dir()
+                } else {
+                    path.is_file()
+                })
+            {
+                return Some(candidate.to_owned());
+            }
+            rest = &tail[end.max(1)..];
+        }
+        None
+    })
+}
+
+fn has_cjk(text: &str) -> bool {
+    text.chars().any(|c| {
+        matches!(c as u32, 0x3040..=0x30FF | 0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xFF00..=0xFFEF)
+    })
+}
 // Server-side limits: Lean MAX_CODE_BYTES, Prolog MAX_PROGRAM_BYTES.
 const MAX_LEAN_SOURCE_BYTES: u64 = 512 * 1024;
 const MAX_PROLOG_SOURCE_BYTES: u64 = 2 * 1024 * 1024;
@@ -507,20 +660,28 @@ struct InlineProlog {
 /// span holding clauses (rules, or several facts). A lone goal with no
 /// program is still a valid query against built-ins.
 fn find_inline_prolog<const N: usize>(inputs: [&str; N]) -> Option<InlineProlog> {
-    inputs.into_iter().find_map(|input| {
-        let spans = code_spans(input);
-        let is_clauses =
-            |span: &str| span.ends_with('.') && (span.contains(":-") || span.contains(". "));
-        let is_goal = |span: &str| span.ends_with('.') && span.contains('(') && !is_clauses(span);
-        let query = spans.iter().rev().find(|span| is_goal(span))?.clone();
-        let program = spans
-            .iter()
-            .filter(|span| is_clauses(span))
-            .cloned()
-            .collect::<Vec<_>>()
-            .join("\n");
-        Some(InlineProlog { program, query })
-    })
+    let is_clauses =
+        |span: &str| span.ends_with('.') && (span.contains(":-") || span.contains(". "));
+    let is_goal = |span: &str| span.ends_with('.') && span.contains('(') && !is_clauses(span);
+    let spans = inputs.map(code_spans);
+    // The planner's input may carry only the query; the program then comes
+    // from the operator instruction.
+    let query = spans
+        .iter()
+        .find_map(|list| list.iter().rev().find(|span| is_goal(span)))?
+        .clone();
+    let program = spans
+        .iter()
+        .map(|list| {
+            list.iter()
+                .filter(|span| is_clauses(span))
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .find(|program| !program.is_empty())
+        .unwrap_or_default();
+    Some(InlineProlog { program, query })
 }
 
 /// Contents of the single-backtick spans in `input`, trimmed and non-empty.
@@ -623,6 +784,152 @@ mod tests {
             Some(&Value::String(
                 "population_assessment_from_data(Trend, Attention).".to_owned()
             ))
+        );
+    }
+
+    fn prepare(
+        action: &str,
+        tool: Option<&str>,
+        input: &str,
+        instruction: &str,
+    ) -> Result<PreparedMcpCall> {
+        let root = crate::test_support::project_root();
+        let config = ProjectConfig::load(root).unwrap();
+        let route = config.action(action).unwrap().clone();
+        prepare_call(
+            &config,
+            AdapterInput {
+                action,
+                route: &route,
+                requested_tool: tool,
+                input,
+                source_instruction: instruction,
+                arguments: json!({}),
+            },
+        )
+    }
+
+    #[test]
+    fn kdb_code_comes_from_a_backtick_span_never_from_prose() {
+        let call = prepare(
+            "table_analysis",
+            Some("run_q"),
+            "KDBで計算",
+            "KDB/qで `sum til 101` を実行し、結果を答えてください。",
+        )
+        .unwrap();
+        assert_eq!(call.adapter, AdapterKind::Kdb);
+        assert_eq!(call.arguments["code"], "sum til 101");
+        let error = prepare(
+            "table_analysis",
+            Some("run_q"),
+            "KDBで平均を計算して",
+            "KDBで平均を計算して",
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("run_q needs q code"));
+        let limits = prepare(
+            "table_analysis",
+            Some("list_server_limits"),
+            "制限",
+            "制限値を取得",
+        )
+        .unwrap();
+        assert_eq!(limits.arguments, json!({}));
+    }
+
+    #[test]
+    fn filter_tools_get_project_paths_and_keyword_tools() {
+        let listing = prepare(
+            "text_filtering",
+            None,
+            "一覧",
+            "Filterで examples/lean_mcp_smoke_test ディレクトリのファイル一覧を取得してください。",
+        )
+        .unwrap();
+        assert_eq!(listing.tool, "list_files");
+        assert_eq!(listing.arguments["subdir"], "examples/lean_mcp_smoke_test");
+        // A stage-less pipeline chosen by the planner is re-targeted.
+        let preview = prepare(
+            "text_filtering",
+            Some("run_filter_pipeline"),
+            "中身を見る",
+            "Filterで examples/open_data_population_pipeline/population_rules.pl の中身をプレビューしてください。",
+        )
+        .unwrap();
+        assert_eq!(preview.tool, "preview_file");
+        let root = crate::test_support::project_root();
+        let config = ProjectConfig::load(root).unwrap();
+        let route = config.action("text_filtering").unwrap().clone();
+        let with_subdir = prepare_call(
+            &config,
+            AdapterInput {
+                action: "text_filtering",
+                route: &route,
+                requested_tool: Some("run_filter_pipeline"),
+                input: "x",
+                source_instruction: "x",
+                arguments: json!({"subdir": "examples"}),
+            },
+        )
+        .unwrap();
+        assert_eq!(with_subdir.tool, "list_files");
+        assert_eq!(
+            preview.arguments["path"],
+            "examples/open_data_population_pipeline/population_rules.pl"
+        );
+    }
+
+    #[test]
+    fn lean_inline_span_excludes_the_closing_backtick_and_prose() {
+        let call = prepare(
+            "logic_proof",
+            Some("check_lean_code"),
+            "Check the theorem",
+            "Leanで次の定理が証明できるか検査してください: `theorem t (n : Nat) : n + 0 = n := by simp` 結果を答えて。",
+        )
+        .unwrap();
+        assert_eq!(
+            call.arguments["code"],
+            "theorem t (n : Nat) : n + 0 = n := by simp"
+        );
+    }
+
+    #[test]
+    fn matlab_code_comes_from_a_span_and_prose_is_refused() {
+        let call = prepare(
+            "calculation_graphing",
+            Some("evaluate_matlab_code"),
+            "平均を計算",
+            "MATLABで `mean([2 4 6 8])` を計算してください。",
+        )
+        .unwrap();
+        assert_eq!(call.arguments["code"], "mean([2 4 6 8])");
+        let error = prepare(
+            "calculation_graphing",
+            Some("evaluate_matlab_code"),
+            "MATLABで1から100までの2乗和を計算",
+            "MATLABで1から100までの2乗和を計算",
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("needs MATLAB code"));
+    }
+
+    #[test]
+    fn prolog_program_is_found_when_the_planner_input_has_only_the_query() {
+        let call = prepare(
+            "logic_rules",
+            Some("run_prolog"),
+            "`path(a,c).` を確認",
+            "(1) Prologでプログラム `edge(a,b). edge(b,c). path(X,Y) :- edge(X,Y). path(X,Y) :- edge(X,Z), path(Z,Y).` に対し問い合わせ `path(a,c).` (2) Leanで `theorem two : 1 + 1 = 2 := by rfl`",
+        )
+        .unwrap();
+        assert_eq!(call.arguments["query"], "path(a,c).");
+        assert!(
+            call.arguments["program_text"]
+                .as_str()
+                .unwrap()
+                .contains("path(X,Y) :- edge(X,Y).")
         );
     }
 

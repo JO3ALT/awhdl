@@ -649,6 +649,10 @@ pub enum McpAdapterKind {
     Lean,
     Prolog,
     Matlab,
+    /// Restricted KDB/q: recovers `run_q` code from the instruction.
+    Kdb,
+    /// Restricted Filter: recovers directory and file paths from the instruction.
+    Filter,
     Passthrough,
 }
 

@@ -73,7 +73,7 @@ preferred_tools = ["evaluate_matlab_code", "run_matlab_file"]
 description = "Restricted KDB/q table and time-series analysis"
 kind = "mcp"
 effect_class = "local_write"
-adapter = "passthrough"
+adapter = "kdb"
 server = "restricted_kdb"
 preferred_tools = ["run_q", "load_csv", "save_table", "save_csv", "load_table", "get_interpreter_state", "get_state_source", "prune_state", "list_server_limits"]
 
@@ -81,7 +81,7 @@ preferred_tools = ["run_q", "load_csv", "save_table", "save_csv", "load_table", 
 description = "Restricted local filtering, aggregation, and bounded text processing"
 kind = "mcp"
 effect_class = "read"
-adapter = "passthrough"
+adapter = "filter"
 server = "restricted_filter"
 preferred_tools = ["run_filter_pipeline", "group_by_count", "csv_summary", "preview_file", "list_files", "list_allowed_commands"]
 

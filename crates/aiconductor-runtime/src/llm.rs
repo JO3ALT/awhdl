@@ -87,48 +87,7 @@ impl LlmClient {
                 "json_schema": {
                     "name": "aiconductor_decision",
                     "strict": true,
-                    "schema": {
-                        "type": "object",
-                        "properties": {
-                            "type": {"type": "string", "enum": allowed_types},
-                            "action": {"type": "string", "enum": action_values},
-                            "input": {"type": "string"},
-                            "tool": {
-                                "enum": [
-                                    null,
-                                    "check_lean_code",
-                                    "check_lean_file",
-                                    "get_lean_environment",
-                                    "run_prolog",
-                                    "run_prolog_file",
-                                    "evaluate_matlab_code",
-                                    "run_matlab_file",
-                                    "run_matlab_test_file",
-                                    "run_q",
-                                    "load_csv",
-                                    "save_table",
-                                    "save_csv",
-                                    "load_table",
-                                    "get_interpreter_state",
-                                    "get_state_source",
-                                    "prune_state",
-                                    "list_server_limits",
-                                    "run_filter_pipeline",
-                                    "group_by_count",
-                                    "csv_summary",
-                                    "preview_file",
-                                    "list_files",
-                                    "list_allowed_commands",
-                                    "codex"
-                                ]
-                            },
-                            "arguments": {"type": "object"},
-                            "answer": {"type": "string"},
-                            "polish_japanese": {"type": "boolean"}
-                        },
-                        "required": ["type"],
-                        "additionalProperties": false
-                    }
+                    "schema": decision_schema(allowed_types, &action_values),
                 }
             })),
         )
@@ -238,5 +197,107 @@ fn truncate(value: &str, limit: usize) -> String {
         format!("{shortened}…")
     } else {
         shortened
+    }
+}
+
+const DECISION_TOOLS: [&str; 24] = [
+    "check_lean_code",
+    "check_lean_file",
+    "get_lean_environment",
+    "run_prolog",
+    "run_prolog_file",
+    "evaluate_matlab_code",
+    "run_matlab_file",
+    "run_matlab_test_file",
+    "run_q",
+    "load_csv",
+    "save_table",
+    "save_csv",
+    "load_table",
+    "get_interpreter_state",
+    "get_state_source",
+    "prune_state",
+    "list_server_limits",
+    "run_filter_pipeline",
+    "group_by_count",
+    "csv_summary",
+    "preview_file",
+    "list_files",
+    "list_allowed_commands",
+    "codex",
+];
+
+/// One branch per allowed decision type. A dispatch must carry an
+/// `arguments` object, so models cannot silently omit tool arguments.
+fn decision_schema(allowed_types: &[&str], actions: &[String]) -> serde_json::Value {
+    let mut tools = vec![serde_json::Value::Null];
+    tools.extend(DECISION_TOOLS.iter().map(|tool| serde_json::json!(tool)));
+    let dispatch = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "type": {"const": "dispatch"},
+            "action": {"type": "string", "enum": actions},
+            "input": {"type": "string"},
+            "tool": {"enum": tools},
+            "arguments": {
+                "type": "object",
+                "properties": {
+                    "code": {"type": "string"},
+                    "query": {"type": "string"},
+                    "program_text": {"type": "string"},
+                    "file": {"type": "string"},
+                    "path": {"type": "string"},
+                    "script_path": {"type": "string"},
+                    "subdir": {"type": "string"}
+                },
+                "additionalProperties": false
+            }
+        },
+        "required": ["type", "action", "input", "tool", "arguments"],
+        "additionalProperties": false
+    });
+    let complete = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "type": {"const": "complete"},
+            "answer": {"type": "string"},
+            "polish_japanese": {"type": "boolean"}
+        },
+        "required": ["type", "answer", "polish_japanese"],
+        "additionalProperties": false
+    });
+    let branches = allowed_types
+        .iter()
+        .filter_map(|kind| match *kind {
+            "dispatch" => Some(dispatch.clone()),
+            "complete" => Some(complete.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    match branches.as_slice() {
+        [single] => single.clone(),
+        _ => serde_json::json!({"anyOf": branches}),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dispatch_branch_requires_arguments_and_scopes_branches() {
+        let actions = vec!["logic_rules".to_owned()];
+        let both = decision_schema(&["dispatch", "complete"], &actions);
+        let branches = both["anyOf"].as_array().unwrap();
+        assert_eq!(branches.len(), 2);
+        let required = branches[0]["required"].as_array().unwrap();
+        assert!(required.contains(&serde_json::json!("arguments")));
+        assert_eq!(
+            branches[0]["properties"]["action"]["enum"],
+            serde_json::json!(["logic_rules"])
+        );
+        let only_complete = decision_schema(&["complete"], &actions);
+        assert_eq!(only_complete["properties"]["type"]["const"], "complete");
+        assert!(only_complete.get("anyOf").is_none());
     }
 }
