@@ -279,6 +279,23 @@ impl ProjectConfig {
         self.routes.actions.get(id)
     }
 
+    /// Whether the planner may choose cloud routes for this instruction.
+    pub fn cloud_opted_in(&self, prompt: &str) -> bool {
+        self.routes
+            .policy
+            .cloud_opt_in_marker
+            .as_deref()
+            .is_some_and(|marker| !marker.is_empty() && prompt.contains(marker))
+    }
+
+    pub fn is_cloud_route(&self, id: &str) -> bool {
+        self.action(id).is_some_and(|route| {
+            route
+                .route_location()
+                .is_ok_and(|location| location == awhdl_checker::Location::Cloud)
+        })
+    }
+
     pub fn resolve_path(&self, value: &str) -> PathBuf {
         let path = Path::new(value);
         if path.is_absolute() {
@@ -479,6 +496,17 @@ pub struct RoutingConfig {
     /// Completion policy for runs that match no workflow.
     #[serde(default)]
     pub completion: CompletionPolicy,
+    #[serde(default)]
+    pub policy: RoutingPolicy,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct RoutingPolicy {
+    /// Cloud routes send data off this network, so the planner may choose them
+    /// only when the operator's instruction contains this marker. Without a
+    /// marker they are reachable only through configured workflows.
+    #[serde(default)]
+    pub cloud_opt_in_marker: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -727,6 +755,23 @@ mod tests {
             .map(|request| request.action)
             .collect::<Vec<_>>();
         assert_eq!(actions, ["sandbox.full_access", "network.connect"]);
+    }
+
+    #[test]
+    fn cloud_routes_need_the_opt_in_marker() {
+        let root = crate::test_support::project_root();
+        let mut config = ProjectConfig::load(&root).unwrap();
+        assert!(config.is_cloud_route("deep_reasoning"));
+        assert!(config.is_cloud_route("open_data_acquisition"));
+        assert!(!config.is_cloud_route("logic_rules"));
+        assert!(!config.is_cloud_route("unknown_action"));
+        assert!(!config.cloud_opted_in("Prologで確認してください"));
+        assert!(config.cloud_opted_in("Codexでも調べてください AIC_ALLOW_CLOUD"));
+        // Without a marker, only workflows reach cloud routes.
+        config.routes.policy.cloud_opt_in_marker = None;
+        assert!(!config.cloud_opted_in("AIC_ALLOW_CLOUD"));
+        config.routes.policy.cloud_opt_in_marker = Some(String::new());
+        assert!(!config.cloud_opted_in("anything"));
     }
 
     #[test]

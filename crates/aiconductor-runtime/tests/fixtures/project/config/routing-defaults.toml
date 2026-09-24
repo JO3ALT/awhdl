@@ -9,6 +9,9 @@ default_action = "loop"
 mcp_access = "allow-listed-per-action"
 fallback_may_expand_mcp_access = false
 record_resolved_route = true
+# Cloud routes (location = "cloud") are offered to the planner only when the
+# instruction contains this marker; configured workflows are unaffected.
+cloud_opt_in_marker = "AIC_ALLOW_CLOUD"
 
 # Controller on the local P2000; the runtime falls back in order when a host
 # is unreachable: RX 9060 XT (ai_20), then RTX 4090 (ai_10).

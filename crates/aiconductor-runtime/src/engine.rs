@@ -609,7 +609,7 @@ impl Engine {
         audit: &mut RunStore,
     ) -> Result<PlanScope> {
         let settings = decider.config();
-        let eligible = state_machine.eligible_actions();
+        let eligible = self.planner_actions(prompt, state_machine);
         let Some(options) = build_options(&eligible, |action| {
             self.config
                 .action(action)
@@ -686,9 +686,23 @@ impl Engine {
         audit: &mut RunStore,
     ) -> Result<Decision> {
         let profile = self.ensure_controller(budget, audit).await?;
+        if !self.config.cloud_opted_in(prompt) {
+            let withheld = state_machine
+                .eligible_actions()
+                .into_iter()
+                .filter(|action| self.config.is_cloud_route(action))
+                .collect::<Vec<_>>();
+            if !withheld.is_empty() {
+                audit.event(
+                    "cloud_routes_withheld",
+                    json!({"actions": withheld}),
+                    &budget.usage,
+                )?;
+            }
+        }
         let (eligible_actions, allowed_types) = match scope {
             PlanScope::Open => (
-                state_machine.eligible_actions(),
+                self.planner_actions(prompt, state_machine),
                 &["dispatch", "complete"][..],
             ),
             PlanScope::Dispatch(action) => (vec![action], &["dispatch"][..]),
@@ -726,7 +740,15 @@ impl Engine {
                 )
                 .await?
                 .payload;
-            match parse_decision(&raw) {
+            let decision = parse_decision(&raw).and_then(|decision| match &decision {
+                // The schema already restricts actions; enforce it in case a
+                // server does not apply the schema strictly.
+                Decision::Dispatch { action, .. } if !eligible_actions.contains(action) => {
+                    bail!("action {action} is not available in this decision")
+                }
+                _ => Ok(decision),
+            });
+            match decision {
                 Ok(decision) => {
                     audit.event(
                         "planner_decision",
@@ -749,6 +771,17 @@ impl Engine {
             }
         }
         unreachable!()
+    }
+
+    /// Eligible actions the planner may choose: cloud routes are withheld
+    /// unless the instruction opts in (see `RoutingPolicy`).
+    fn planner_actions(&self, prompt: &str, state_machine: &ActionStateMachine) -> Vec<String> {
+        let cloud_allowed = self.config.cloud_opted_in(prompt);
+        state_machine
+            .eligible_actions()
+            .into_iter()
+            .filter(|action| cloud_allowed || !self.config.is_cloud_route(action))
+            .collect()
     }
 
     fn planner_system_prompt(&self, eligible: &[String]) -> String {

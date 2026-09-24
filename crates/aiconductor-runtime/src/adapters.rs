@@ -267,7 +267,17 @@ fn prepare_lean(
             }
         }
         "check_lean_file" => {
-            let file = required_path(object, "path", source, &[".lean"])?;
+            let file = match required_path(object, "path", source, &[".lean"]) {
+                Ok(file) => file,
+                // A planner may pick the file tool for Lean written in the instruction.
+                Err(error) => {
+                    let code =
+                        find_lean_code([source.source_instruction, source.input]).ok_or(error)?;
+                    object.clear();
+                    object.insert("code".to_owned(), Value::String(code));
+                    return Ok(Some("check_lean_code".to_owned()));
+                }
+            };
             let code = read_project_source(config, source.action, &file, MAX_LEAN_SOURCE_BYTES)?;
             let timeout = object.remove("timeout_sec");
             object.clear();
@@ -327,10 +337,29 @@ fn prepare_prolog(
 ) -> Result<Option<String>> {
     match tool {
         "run_prolog" => {
+            if !object.contains_key("query")
+                && let Some(inline) = find_inline_prolog([source.input, source.source_instruction])
+            {
+                object.insert("query".to_owned(), Value::String(inline.query));
+                if !object.contains_key("program_text") {
+                    object.insert("program_text".to_owned(), Value::String(inline.program));
+                }
+            }
             required_text(object, "query", source.input)?;
         }
         "run_prolog_file" => {
-            let file = required_path(object, "file", source, &[".pl", ".pro", ".prolog"])?;
+            let file = match required_path(object, "file", source, &[".pl", ".pro", ".prolog"]) {
+                Ok(file) => file,
+                // A planner may pick the file tool for a program written in the instruction.
+                Err(error) => {
+                    let inline = find_inline_prolog([source.input, source.source_instruction])
+                        .ok_or(error)?;
+                    object.clear();
+                    object.insert("query".to_owned(), Value::String(inline.query));
+                    object.insert("program_text".to_owned(), Value::String(inline.program));
+                    return Ok(Some("run_prolog".to_owned()));
+                }
+            };
             let program =
                 read_project_source(config, source.action, &file, MAX_PROLOG_SOURCE_BYTES)?;
             if !object.contains_key("query")
@@ -468,23 +497,57 @@ fn find_project_path<const N: usize>(inputs: [&str; N], extensions: &[&str]) -> 
     })
 }
 
+struct InlineProlog {
+    program: String,
+    query: String,
+}
+
+/// A Prolog program and query written as backtick spans in an instruction.
+/// The query is the last span that is a single goal; the program is every
+/// span holding clauses (rules, or several facts). A lone goal with no
+/// program is still a valid query against built-ins.
+fn find_inline_prolog<const N: usize>(inputs: [&str; N]) -> Option<InlineProlog> {
+    inputs.into_iter().find_map(|input| {
+        let spans = code_spans(input);
+        let is_clauses =
+            |span: &str| span.ends_with('.') && (span.contains(":-") || span.contains(". "));
+        let is_goal = |span: &str| span.ends_with('.') && span.contains('(') && !is_clauses(span);
+        let query = spans.iter().rev().find(|span| is_goal(span))?.clone();
+        let program = spans
+            .iter()
+            .filter(|span| is_clauses(span))
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n");
+        Some(InlineProlog { program, query })
+    })
+}
+
+/// Contents of the single-backtick spans in `input`, trimmed and non-empty.
+fn code_spans(input: &str) -> Vec<String> {
+    let mut spans = Vec::new();
+    let mut remainder = input;
+    while let Some(start) = remainder.find('`') {
+        remainder = &remainder[start + 1..];
+        let Some(end) = remainder.find('`') else {
+            break;
+        };
+        let span = remainder[..end].trim();
+        if !span.is_empty() {
+            spans.push(span.to_owned());
+        }
+        remainder = &remainder[end + 1..];
+    }
+    spans
+}
+
 fn find_code_span<const N: usize>(
     inputs: [&str; N],
     predicate: impl Fn(&str) -> bool,
 ) -> Option<String> {
-    inputs.into_iter().find_map(|input| {
-        let mut remainder = input;
-        while let Some(start) = remainder.find('`') {
-            remainder = &remainder[start + 1..];
-            let end = remainder.find('`')?;
-            let span = remainder[..end].trim();
-            if predicate(span) {
-                return Some(span.to_owned());
-            }
-            remainder = &remainder[end + 1..];
-        }
-        None
-    })
+    inputs
+        .into_iter()
+        .find_map(|input| code_spans(input).into_iter().find(|span| predicate(span)))
 }
 
 fn find_matlab_run<const N: usize>(inputs: [&str; N]) -> Option<String> {
@@ -560,6 +623,79 @@ mod tests {
             Some(&Value::String(
                 "population_assessment_from_data(Trend, Attention).".to_owned()
             ))
+        );
+    }
+
+    #[test]
+    fn prolog_file_tool_without_a_file_uses_the_inline_program() {
+        let root = crate::test_support::project_root();
+        let config = ProjectConfig::load(root).unwrap();
+        let route = config.action("logic_rules").unwrap();
+        let instruction = "Prologで確認: プログラム: `edge(a,b). edge(b,c). path(X,Y) :- edge(X,Y). path(X,Y) :- edge(X,Z), path(Z,Y).` 問い合わせ: `path(a,c).`";
+        for requested in ["run_prolog_file", "run_prolog"] {
+            let call = prepare_call(
+                &config,
+                AdapterInput {
+                    action: "logic_rules",
+                    route,
+                    requested_tool: Some(requested),
+                    input: instruction,
+                    source_instruction: instruction,
+                    arguments: json!({}),
+                },
+            )
+            .unwrap();
+            assert_eq!(call.tool, "run_prolog", "requested {requested}");
+            assert_eq!(call.arguments["query"], "path(a,c).");
+            assert_eq!(
+                call.arguments["program_text"],
+                "edge(a,b). edge(b,c). path(X,Y) :- edge(X,Y). path(X,Y) :- edge(X,Z), path(Z,Y)."
+            );
+            assert!(call.arguments.get("file").is_none());
+        }
+    }
+
+    #[test]
+    fn prolog_file_tool_without_file_or_program_still_fails() {
+        let root = crate::test_support::project_root();
+        let config = ProjectConfig::load(root).unwrap();
+        let route = config.action("logic_rules").unwrap();
+        let error = prepare_call(
+            &config,
+            AdapterInput {
+                action: "logic_rules",
+                route,
+                requested_tool: Some("run_prolog_file"),
+                input: "Prologで何か確認する",
+                source_instruction: "Prologで何か確認する",
+                arguments: json!({}),
+            },
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("required path argument: file"));
+    }
+
+    #[test]
+    fn lean_file_tool_without_a_file_uses_the_inline_source() {
+        let root = crate::test_support::project_root();
+        let config = ProjectConfig::load(root).unwrap();
+        let route = config.action("logic_proof").unwrap();
+        let call = prepare_call(
+            &config,
+            AdapterInput {
+                action: "logic_proof",
+                route,
+                requested_tool: Some("check_lean_file"),
+                input: "証明を確認",
+                source_instruction: "次を検証: theorem t (n : Nat) : n = n := by rfl",
+                arguments: json!({}),
+            },
+        )
+        .unwrap();
+        assert_eq!(call.tool, "check_lean_code");
+        assert_eq!(
+            call.arguments["code"],
+            "theorem t (n : Nat) : n = n := by rfl"
         );
     }
 
