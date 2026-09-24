@@ -14,7 +14,7 @@ record_resolved_route = true
 cloud_opt_in_marker = "AIC_ALLOW_CLOUD"
 
 # Controller on the RTX 4090 (ai_10): the 27B chose and stopped best in the
-# controller benchmark (bench/controller/RESULTS.md). When ai_10 is
+# controller benchmark (bench/controller/RESULTS_ja.md). When ai_10 is
 # unreachable the runtime falls back to the RX 9060 XT (ai_20), then the
 # local P2000.
 [actions.loop]
