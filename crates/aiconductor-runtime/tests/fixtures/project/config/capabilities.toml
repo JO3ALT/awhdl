@@ -32,13 +32,6 @@ resource = "model:devstral-small-2-24b"
 effect_class = "pure"
 
 [[grants]]
-id = "small_fallback_model"
-subjects = ["loop"]
-action = "model.chat"
-resource = "model:qwen3-4b-instruct-2507-q4km"
-effect_class = "pure"
-
-[[grants]]
 id = "rx9060xt_fallback_model"
 subjects = ["loop", "initial_coding"]
 action = "model.chat"

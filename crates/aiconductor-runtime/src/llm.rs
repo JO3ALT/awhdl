@@ -227,8 +227,8 @@ const DECISION_TOOLS: [&str; 24] = [
     "codex",
 ];
 
-/// One branch per allowed decision type. A dispatch must carry an
-/// `arguments` object, so models cannot silently omit tool arguments.
+/// Decision schema. When only one decision type is allowed (a decider chose
+/// it), that type's keys are all required, so a dispatch carries arguments.
 fn decision_schema(allowed_types: &[&str], actions: &[String]) -> serde_json::Value {
     let mut tools = vec![serde_json::Value::Null];
     tools.extend(DECISION_TOOLS.iter().map(|tool| serde_json::json!(tool)));
@@ -266,17 +266,28 @@ fn decision_schema(allowed_types: &[&str], actions: &[String]) -> serde_json::Va
         "required": ["type", "answer", "polish_japanese"],
         "additionalProperties": false
     });
-    let branches = allowed_types
-        .iter()
-        .filter_map(|kind| match *kind {
-            "dispatch" => Some(dispatch.clone()),
-            "complete" => Some(complete.clone()),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    match branches.as_slice() {
-        [single] => single.clone(),
-        _ => serde_json::json!({"anyOf": branches}),
+    match allowed_types {
+        ["dispatch"] => dispatch,
+        ["complete"] => complete,
+        // Both allowed: one object whose only required key is `type`. Keys are
+        // emitted required-first, so the model states dispatch or complete
+        // before anything else. With every key required (or one branch per
+        // type), keys come out alphabetically and "action" precedes "type";
+        // models then committed to dispatching and never completed.
+        _ => serde_json::json!({
+            "type": "object",
+            "properties": {
+                "type": {"type": "string", "enum": allowed_types},
+                "action": dispatch["properties"]["action"],
+                "input": {"type": "string"},
+                "tool": dispatch["properties"]["tool"],
+                "arguments": dispatch["properties"]["arguments"],
+                "answer": {"type": "string"},
+                "polish_japanese": {"type": "boolean"}
+            },
+            "required": ["type"],
+            "additionalProperties": false
+        }),
     }
 }
 
@@ -285,19 +296,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn dispatch_branch_requires_arguments_and_scopes_branches() {
+    fn open_decisions_ask_for_the_type_first() {
         let actions = vec!["logic_rules".to_owned()];
-        let both = decision_schema(&["dispatch", "complete"], &actions);
-        let branches = both["anyOf"].as_array().unwrap();
-        assert_eq!(branches.len(), 2);
-        let required = branches[0]["required"].as_array().unwrap();
-        assert!(required.contains(&serde_json::json!("arguments")));
+        let open = decision_schema(&["dispatch", "complete"], &actions);
+        assert_eq!(open["required"], serde_json::json!(["type"]));
+        assert!(open.get("anyOf").is_none());
         assert_eq!(
-            branches[0]["properties"]["action"]["enum"],
+            open["properties"]["action"]["enum"],
             serde_json::json!(["logic_rules"])
         );
-        let only_complete = decision_schema(&["complete"], &actions);
-        assert_eq!(only_complete["properties"]["type"]["const"], "complete");
-        assert!(only_complete.get("anyOf").is_none());
+        assert!(open["properties"]["arguments"]["properties"]["code"].is_object());
+        // A decider-scoped dispatch requires its arguments.
+        let dispatch = decision_schema(&["dispatch"], &actions);
+        let required = dispatch["required"].as_array().unwrap();
+        assert!(required.contains(&serde_json::json!("arguments")));
+        let complete = decision_schema(&["complete"], &actions);
+        assert_eq!(complete["properties"]["type"]["const"], "complete");
     }
 }

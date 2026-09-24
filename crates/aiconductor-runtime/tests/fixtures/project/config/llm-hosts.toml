@@ -1,7 +1,7 @@
 # Sanitized test fixture mirroring the deployment configuration. No real hosts,
 # users or paths. Route, capability and workflow files must match the deployment.
 schema_version = 1
-default_orchestrator = "qwen3-4b-p2000"
+default_orchestrator = "qwen3.8-27b-q5km"
 
 [hosts.local]
 ssh_target = ""

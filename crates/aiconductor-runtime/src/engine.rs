@@ -831,7 +831,7 @@ Rules:
 - For run_prolog put the clauses in arguments.program_text and the goal in arguments.query.
 - For run_q put q code in arguments.code. For list_files put the directory in arguments.subdir. For preview_file put the file path in arguments.path.
 - When the instruction gives no code, write the code yourself in arguments.code; never put the request wording there.
-- Always include arguments; use {{}} only for tools without parameters.
+- Include arguments whenever the tool takes parameters.
 - After the requested result is observed, complete instead of dispatching more actions.
 - arguments must be a JSON object containing typed MCP arguments when known.
 - Treat structured adapter output as immutable facts. Copy numeric values exactly and never rescale them.
