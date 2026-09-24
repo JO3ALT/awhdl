@@ -63,16 +63,18 @@ pub fn prepare_call(config: &ProjectConfig, source: AdapterInput<'_>) -> Result<
     let adapter = AdapterKind::resolve(source.route, &tool)?;
     let mut arguments = source.arguments.as_object().cloned().unwrap_or_default();
 
-    match adapter {
-        AdapterKind::Codex => prepare_codex(config, &source, &mut arguments)?,
+    let rewritten = match adapter {
+        AdapterKind::Codex => {
+            prepare_codex(config, &source, &mut arguments)?;
+            None
+        }
         AdapterKind::Lean => prepare_lean(config, &tool, &source, &mut arguments)?,
         AdapterKind::Prolog => prepare_prolog(config, &tool, &source, &mut arguments)?,
-        AdapterKind::Matlab => {
-            if let Some(rewritten) = prepare_matlab(config, &tool, &source, &mut arguments)? {
-                tool = rewritten;
-            }
-        }
-        AdapterKind::Passthrough => {}
+        AdapterKind::Matlab => prepare_matlab(config, &tool, &source, &mut arguments)?,
+        AdapterKind::Passthrough => None,
+    };
+    if let Some(rewritten) = rewritten {
+        tool = rewritten;
     }
 
     Ok(PreparedMcpCall {
@@ -247,12 +249,15 @@ fn effective_input<'a>(source: &'a AdapterInput<'_>) -> &'a str {
     }
 }
 
+/// The Lean and Prolog servers run on a remote host that sees this workspace
+/// only through delayed file synchronization, so project files are read here
+/// (after the capability check) and sent as code. Returns a replacement tool.
 fn prepare_lean(
     config: &ProjectConfig,
     tool: &str,
     source: &AdapterInput<'_>,
     object: &mut Map<String, Value>,
-) -> Result<()> {
+) -> Result<Option<String>> {
     match tool {
         "check_lean_code" => {
             if !object.contains_key("code") {
@@ -263,16 +268,19 @@ fn prepare_lean(
         }
         "check_lean_file" => {
             let file = required_path(object, "path", source, &[".lean"])?;
-            ensure_readable_project_file(config, source.action, &file)?;
-            object.insert(
-                "path".to_owned(),
-                Value::String(config.resolve_path(&file).to_string_lossy().into_owned()),
-            );
+            let code = read_project_source(config, source.action, &file, MAX_LEAN_SOURCE_BYTES)?;
+            let timeout = object.remove("timeout_sec");
+            object.clear();
+            object.insert("code".to_owned(), Value::String(code));
+            if let Some(timeout) = timeout {
+                object.insert("timeout_sec".to_owned(), timeout);
+            }
+            return Ok(Some("check_lean_code".to_owned()));
         }
         "get_lean_environment" => {}
         _ => bail!("Lean adapter does not support tool {tool}"),
     }
-    Ok(())
+    Ok(None)
 }
 
 fn find_lean_code<'a>(candidates: impl IntoIterator<Item = &'a str>) -> Option<String> {
@@ -316,14 +324,15 @@ fn prepare_prolog(
     tool: &str,
     source: &AdapterInput<'_>,
     object: &mut Map<String, Value>,
-) -> Result<()> {
+) -> Result<Option<String>> {
     match tool {
         "run_prolog" => {
             required_text(object, "query", source.input)?;
         }
         "run_prolog_file" => {
             let file = required_path(object, "file", source, &[".pl", ".pro", ".prolog"])?;
-            ensure_readable_project_file(config, source.action, &file)?;
+            let program =
+                read_project_source(config, source.action, &file, MAX_PROLOG_SOURCE_BYTES)?;
             if !object.contains_key("query")
                 && let Some(query) =
                     find_code_span([source.input, source.source_instruction], |value| {
@@ -332,10 +341,16 @@ fn prepare_prolog(
             {
                 object.insert("query".to_owned(), Value::String(query));
             }
+            object.remove("file");
+            object
+                .entry("query".to_owned())
+                .or_insert_with(|| Value::String("true.".to_owned()));
+            object.insert("program_text".to_owned(), Value::String(program));
+            return Ok(Some("run_prolog".to_owned()));
         }
         _ => bail!("Prolog adapter does not support tool {tool}"),
     }
-    Ok(())
+    Ok(None)
 }
 
 /// The MATLAB host cannot see this workspace, so a project `.m` file is read
@@ -357,14 +372,7 @@ fn prepare_matlab(
         }
         "run_matlab_file" => {
             let file = required_path(object, "script_path", source, &[".m"])?;
-            ensure_readable_project_file(config, source.action, &file)?;
-            let path = config.resolve_path(&file);
-            let size = fs::metadata(&path)?.len();
-            if size > MAX_MATLAB_SCRIPT_BYTES {
-                bail!("MATLAB script is larger than {MAX_MATLAB_SCRIPT_BYTES} bytes");
-            }
-            let code = fs::read_to_string(&path)
-                .with_context(|| format!("MATLAB script is not UTF-8: {}", path.display()))?;
+            let code = read_project_source(config, source.action, &file, MAX_MATLAB_SCRIPT_BYTES)?;
             object.clear();
             object.insert("code".to_owned(), Value::String(code));
             Ok(Some("evaluate_matlab_code".to_owned()))
@@ -377,6 +385,29 @@ fn prepare_matlab(
 }
 
 const MAX_MATLAB_SCRIPT_BYTES: u64 = 256 * 1024;
+// Server-side limits: Lean MAX_CODE_BYTES, Prolog MAX_PROGRAM_BYTES.
+const MAX_LEAN_SOURCE_BYTES: u64 = 512 * 1024;
+const MAX_PROLOG_SOURCE_BYTES: u64 = 2 * 1024 * 1024;
+
+/// Capability-check a project source file and return its UTF-8 contents.
+fn read_project_source(
+    config: &ProjectConfig,
+    subject: &str,
+    file: &str,
+    max_bytes: u64,
+) -> Result<String> {
+    ensure_readable_project_file(config, subject, file)?;
+    let path = config.resolve_path(file);
+    let size = fs::metadata(&path)?.len();
+    if size > max_bytes {
+        bail!(
+            "source file is larger than {max_bytes} bytes: {}",
+            path.display()
+        );
+    }
+    fs::read_to_string(&path)
+        .with_context(|| format!("source file is not UTF-8: {}", path.display()))
+}
 
 fn required_text(object: &mut Map<String, Value>, key: &str, fallback: &str) -> Result<()> {
     object
@@ -494,7 +525,6 @@ fn truncate_owned(mut value: String, max: usize) -> (String, bool) {
 mod tests {
     use super::*;
     use crate::config::ProjectConfig;
-    use std::path::Path;
 
     #[test]
     fn prolog_adapter_recovers_typed_file_and_query() {
@@ -514,11 +544,16 @@ mod tests {
         )
         .unwrap();
         assert_eq!(call.adapter, AdapterKind::Prolog);
+        // The file is sent as program text, since the Prolog host may not see it yet.
+        assert_eq!(call.tool, "run_prolog");
+        assert!(call.arguments.get("file").is_none());
+        let program = std::fs::read_to_string(
+            config.resolve_path("examples/open_data_population_pipeline/population_rules.pl"),
+        )
+        .unwrap();
         assert_eq!(
-            call.arguments.get("file"),
-            Some(&Value::String(
-                "examples/open_data_population_pipeline/population_rules.pl".to_owned()
-            ))
+            call.arguments.get("program_text"),
+            Some(&Value::String(program))
         );
         assert_eq!(
             call.arguments.get("query"),
@@ -599,7 +634,7 @@ mod tests {
     }
 
     #[test]
-    fn lean_file_adapter_passes_an_absolute_verified_path() {
+    fn lean_file_adapter_sends_the_verified_file_as_code() {
         let root = crate::test_support::project_root();
         let config = ProjectConfig::load(root).unwrap();
         let route = config.action("logic_proof").unwrap();
@@ -615,9 +650,12 @@ mod tests {
             },
         )
         .unwrap();
-        let path = call.arguments.get("path").and_then(Value::as_str).unwrap();
-        assert!(Path::new(path).is_absolute());
-        assert!(Path::new(path).is_file());
+        assert_eq!(call.tool, "check_lean_code");
+        assert!(call.arguments.get("path").is_none());
+        let code =
+            std::fs::read_to_string(config.resolve_path("examples/lean_mcp_smoke_test/valid.lean"))
+                .unwrap();
+        assert_eq!(call.arguments.get("code"), Some(&Value::String(code)));
     }
 
     #[test]
@@ -637,7 +675,8 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(call.tool, "run_prolog_file");
+        assert_eq!(call.tool, "run_prolog");
+        assert!(call.arguments.get("program_text").is_some());
     }
 
     #[test]

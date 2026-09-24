@@ -7,6 +7,7 @@ pub mod capability;
 pub mod completion;
 pub mod config;
 pub mod dataflow;
+pub mod decider;
 pub mod design;
 pub mod effect;
 pub mod engine;

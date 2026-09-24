@@ -5,7 +5,8 @@ use crate::audit::{RunState, RunStore};
 use crate::budget::Budget;
 use crate::capability::CapabilityRequest;
 use crate::completion::{CompletionFacts, CompletionPolicy, CompletionStatus, evaluate};
-use crate::config::{ActionConfig, ProjectConfig};
+use crate::config::{ActionConfig, LaunchProfile, ProjectConfig};
+use crate::decider::{DecisionClient, StepSummary, build_options, build_state};
 use crate::design::{BoundDevice, DesignOutcome, DesignRun, Dispatcher, compile};
 use crate::effect::EffectDecision;
 use crate::effect::EffectRequest;
@@ -23,6 +24,16 @@ struct Observation {
     action: String,
     ok: bool,
     result: String,
+}
+
+/// What the LLM planner may decide on this iteration.
+enum PlanScope {
+    /// Any eligible action, or completion.
+    Open,
+    /// Only this action, chosen by the decision model; the planner fills it in.
+    Dispatch(String),
+    /// Only completion, chosen by the decision model.
+    Complete,
 }
 
 #[derive(Debug, Deserialize)]
@@ -57,6 +68,8 @@ pub struct Engine {
     config: ProjectConfig,
     models: ModelManager,
     llm: LlmClient,
+    /// Optional decision model that selects the next action.
+    decider: Option<DecisionClient>,
     /// Trusted human approval channel; `None` makes approval-bound writes fail closed.
     approver: Option<Box<dyn Approver>>,
 }
@@ -72,10 +85,16 @@ impl Engine {
                 HumanPortApprover::new(&config, settings).map(|a| Box::new(a) as Box<dyn Approver>)
             })
             .transpose()?;
+        let decider = config
+            .active_decider()
+            .cloned()
+            .map(DecisionClient::new)
+            .transpose()?;
         Ok(Self {
             config,
             models: ModelManager::new()?,
             llm: LlmClient::new(timeout)?,
+            decider,
             approver,
         })
     }
@@ -264,7 +283,7 @@ impl Engine {
                         arguments: Map::new(),
                     }
                 } else {
-                    self.plan(
+                    self.decide_next(
                         prompt,
                         &observations,
                         &state_machine,
@@ -511,7 +530,57 @@ impl Engine {
         outcome
     }
 
-    async fn plan(
+    /// The default orchestrator, then the controller route's fallbacks, so the
+    /// loop survives an unreachable controller host.
+    async fn ensure_controller(
+        &self,
+        budget: &mut Budget,
+        audit: &mut RunStore,
+    ) -> Result<LaunchProfile> {
+        let controller = &self.config.routes.default_action;
+        let mut candidates = vec![self.config.models.default_orchestrator.as_str()];
+        if let Some(route) = self.config.action(controller) {
+            candidates.extend(
+                route
+                    .fallback
+                    .iter()
+                    .map(String::as_str)
+                    .filter(|id| *id != self.config.models.default_orchestrator),
+            );
+        }
+        let mut last_error = None;
+        for profile_id in candidates {
+            if let Err(error) = self.config.authorize_route(
+                controller,
+                &CapabilityRequest::new("model.chat", format!("model:{profile_id}")),
+            ) {
+                last_error = Some(error);
+                continue;
+            }
+            match self
+                .models
+                .ensure(profile_id, &self.config, budget, audit)
+                .await
+            {
+                Ok(profile) => return Ok(profile),
+                Err(error) => {
+                    audit.event(
+                        "controller_unavailable",
+                        json!({"profile": profile_id, "error": format!("{error:#}")}),
+                        &budget.usage,
+                    )?;
+                    last_error = Some(error);
+                }
+            }
+        }
+        Err(last_error.context("no controller model is available")?)
+    }
+
+    /// Select the next step. With a decision model, it picks the action and the
+    /// LLM planner only fills that action's input and arguments; below the
+    /// confidence threshold, or when the model is unavailable, the LLM planner
+    /// decides alone.
+    async fn decide_next(
         &self,
         prompt: &str,
         observations: &[Observation],
@@ -519,17 +588,113 @@ impl Engine {
         budget: &mut Budget,
         audit: &mut RunStore,
     ) -> Result<Decision> {
-        let controller_id = &self.config.models.default_orchestrator;
+        let scope = match &self.decider {
+            Some(decider) => {
+                self.consult_decider(decider, prompt, observations, state_machine, budget, audit)
+                    .await?
+            }
+            None => PlanScope::Open,
+        };
+        self.plan(prompt, observations, state_machine, scope, budget, audit)
+            .await
+    }
+
+    async fn consult_decider(
+        &self,
+        decider: &DecisionClient,
+        prompt: &str,
+        observations: &[Observation],
+        state_machine: &ActionStateMachine,
+        budget: &mut Budget,
+        audit: &mut RunStore,
+    ) -> Result<PlanScope> {
+        let settings = decider.config();
+        let eligible = state_machine.eligible_actions();
+        let Some(options) = build_options(&eligible, |action| {
+            self.config
+                .action(action)
+                .map(|route| route.description.clone())
+                .unwrap_or_default()
+        }) else {
+            return Ok(PlanScope::Open);
+        };
         self.config.authorize_route(
             &self.config.routes.default_action,
-            &CapabilityRequest::new("model.chat", format!("model:{controller_id}")),
+            &CapabilityRequest::new("model.decide", format!("decider:{}", settings.id)),
         )?;
-        let profile = self
-            .models
-            .ensure(controller_id, &self.config, budget, audit)
-            .await?;
-        let system = self.planner_system_prompt(state_machine);
-        let eligible_actions = state_machine.eligible_actions();
+        let steps = observations
+            .iter()
+            .map(|item| StepSummary {
+                action: &item.action,
+                ok: item.ok,
+                result: &item.result,
+            })
+            .collect::<Vec<_>>();
+        let state = build_state(
+            prompt,
+            &state_machine.snapshot(),
+            &steps,
+            settings.max_state_chars,
+        );
+        audit.event(
+            "decider_request_started",
+            json!({
+                "decider": settings.id,
+                "location": settings.location,
+                "options": options.iter().map(|o| &o.action).collect::<Vec<_>>(),
+                "state_chars": state.chars().count(),
+            }),
+            &budget.usage,
+        )?;
+        let outcome = match decider.decide(&state, &options).await {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                audit.event(
+                    "decider_unavailable",
+                    json!({"decider": settings.id, "error": format!("{error:#}")}),
+                    &budget.usage,
+                )?;
+                return Ok(PlanScope::Open);
+            }
+        };
+        let accepted = outcome.confidence >= settings.min_confidence;
+        audit.event(
+            "decider_decision",
+            json!({
+                "decider": settings.id,
+                "action": outcome.action,
+                "confidence": outcome.confidence,
+                "distribution": outcome.distribution,
+                "accepted": accepted,
+            }),
+            &budget.usage,
+        )?;
+        Ok(match (accepted, outcome.is_complete()) {
+            (false, _) => PlanScope::Open,
+            (true, true) => PlanScope::Complete,
+            (true, false) => PlanScope::Dispatch(outcome.action),
+        })
+    }
+
+    async fn plan(
+        &self,
+        prompt: &str,
+        observations: &[Observation],
+        state_machine: &ActionStateMachine,
+        scope: PlanScope,
+        budget: &mut Budget,
+        audit: &mut RunStore,
+    ) -> Result<Decision> {
+        let profile = self.ensure_controller(budget, audit).await?;
+        let (eligible_actions, allowed_types) = match scope {
+            PlanScope::Open => (
+                state_machine.eligible_actions(),
+                &["dispatch", "complete"][..],
+            ),
+            PlanScope::Dispatch(action) => (vec![action], &["dispatch"][..]),
+            PlanScope::Complete => (Vec::new(), &["complete"][..]),
+        };
+        let system = self.planner_system_prompt(&eligible_actions);
         let context = json!({
             "instruction": prompt,
             "observations": observations,
@@ -555,6 +720,7 @@ impl Engine {
                         &system,
                         &user,
                         self.config.runtime.planner.temperature,
+                        allowed_types,
                         &eligible_actions,
                     ),
                 )
@@ -585,8 +751,7 @@ impl Engine {
         unreachable!()
     }
 
-    fn planner_system_prompt(&self, state_machine: &ActionStateMachine) -> String {
-        let eligible = state_machine.eligible_actions();
+    fn planner_system_prompt(&self, eligible: &[String]) -> String {
         let actions = self
             .config
             .routes

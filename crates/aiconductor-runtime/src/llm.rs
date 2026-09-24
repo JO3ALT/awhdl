@@ -68,6 +68,7 @@ impl LlmClient {
         system: &str,
         user: &str,
         temperature: f32,
+        allowed_types: &[&str],
         allowed_actions: &[String],
     ) -> Result<String> {
         let action_values = if allowed_actions.is_empty() {
@@ -89,7 +90,7 @@ impl LlmClient {
                     "schema": {
                         "type": "object",
                         "properties": {
-                            "type": {"type": "string", "enum": ["dispatch", "complete"]},
+                            "type": {"type": "string", "enum": allowed_types},
                             "action": {"type": "string", "enum": action_values},
                             "input": {"type": "string"},
                             "tool": {

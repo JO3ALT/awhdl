@@ -11,16 +11,30 @@ schema_version = 1
 
 [[grants]]
 id = "orchestrator_model"
-subjects = ["loop", "initial_coding"]
+subjects = ["loop", "initial_coding", "japanese_polishing"]
+action = "model.chat"
+resource = "model:qwen3-4b-p2000"
+effect_class = "pure"
+
+[[grants]]
+id = "large_model"
+subjects = ["initial_coding"]
 action = "model.chat"
 resource = "model:qwen3.8-27b-q5km"
 effect_class = "pure"
 
 [[grants]]
 id = "small_fallback_model"
-subjects = ["loop", "initial_coding"]
+subjects = ["loop"]
 action = "model.chat"
 resource = "model:qwen3-4b-instruct-2507-q4km"
+effect_class = "pure"
+
+[[grants]]
+id = "rx9060xt_fallback_model"
+subjects = ["loop", "initial_coding"]
+action = "model.chat"
+resource = "model:qwen3vl-8b-rocm"
 effect_class = "pure"
 
 [[grants]]
@@ -31,17 +45,18 @@ resource = "model:llm-jp-4-8b-thinking-bf16"
 effect_class = "pure"
 
 [[grants]]
-id = "polishing_fallback_model"
-subjects = ["japanese_polishing"]
-action = "model.chat"
-resource = "model:qwen3-4b-instruct-2507-q4km"
-effect_class = "pure"
-
-[[grants]]
 id = "vision_model"
 subjects = ["vision"]
 action = "model.chat"
 resource = "model:qwen3vl-8b-rocm"
+effect_class = "pure"
+
+# Decision model that selects the controller's next action (runtime.toml [decider]).
+[[grants]]
+id = "controller_decider"
+subjects = ["loop"]
+action = "model.decide"
+resource = "decider:autotrust-jev"
 effect_class = "pure"
 
 # --- Proof, rules, filtering (read-only tools) ----------------------------------

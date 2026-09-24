@@ -10,26 +10,29 @@ mcp_access = "allow-listed-per-action"
 fallback_may_expand_mcp_access = false
 record_resolved_route = true
 
+# Controller on the local P2000; the runtime falls back in order when a host
+# is unreachable: RX 9060 XT (ai_20), then RTX 4090 (ai_10).
 [actions.loop]
 description = "Default orchestration and repeated control loop"
 kind = "model"
 effect_class = "pure"
-model = "qwen3.8-27b-q5km"
-fallback = ["qwen3-4b-instruct-2507-q4km"]
+model = "qwen3-4b-p2000"
+fallback = ["qwen3vl-8b-rocm", "qwen3-4b-instruct-2507-q4km"]
 
+# Larger models run on the RTX 4090 (ai_10).
 [actions.initial_coding]
 description = "Generate the initial implementation"
 kind = "model"
 effect_class = "pure"
 model = "qwen3.8-27b-q5km"
-fallback = ["qwen3-4b-instruct-2507-q4km"]
+fallback = ["qwen3vl-8b-rocm", "qwen3-4b-p2000"]
 
 [actions.japanese_polishing]
 description = "Polish and rewrite final Japanese text"
 kind = "model"
 effect_class = "pure"
 model = "llm-jp-4-8b-thinking-bf16"
-fallback = ["qwen3-4b-instruct-2507-q4km"]
+fallback = ["qwen3-4b-p2000"]
 repeatable = true
 
 [actions.vision]

@@ -221,7 +221,8 @@ impl ProjectConfig {
             }
         }
         self.validate_completion()?;
-        self.validate_capabilities()
+        self.validate_capabilities()?;
+        self.validate_decider()
     }
 
     fn is_model_route(&self, action: &str) -> bool {
@@ -309,6 +310,65 @@ pub struct RuntimeConfig {
     /// Without an approval adapter, approval-bound writes fail closed.
     #[serde(default)]
     pub approval: Option<ApprovalAdapterConfig>,
+    /// Optional decision model that selects the controller's next action.
+    #[serde(default)]
+    pub decider: Option<DeciderConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeciderConfig {
+    pub enabled: bool,
+    /// Capability resource is `decider:<id>`.
+    pub id: String,
+    /// `POST` endpoint of a System One style `/v1/decisions` service.
+    pub endpoint: String,
+    /// `local` or `cloud`; a cloud decider receives the compact run state.
+    pub location: String,
+    /// Below this, the LLM planner makes the whole decision instead.
+    pub min_confidence: f64,
+    /// Upper bound of the compact state sent to the model.
+    pub max_state_chars: usize,
+    #[serde(default = "default_decider_timeout")]
+    pub timeout_sec: u64,
+}
+
+fn default_decider_timeout() -> u64 {
+    10
+}
+
+impl ProjectConfig {
+    /// The configured decision model, if one is enabled.
+    pub fn active_decider(&self) -> Option<&DeciderConfig> {
+        self.runtime
+            .decider
+            .as_ref()
+            .filter(|decider| decider.enabled)
+    }
+
+    fn validate_decider(&self) -> Result<()> {
+        let Some(decider) = self.active_decider() else {
+            return Ok(());
+        };
+        if !(decider.endpoint.starts_with("http://") || decider.endpoint.starts_with("https://")) {
+            bail!("decider endpoint must be an http(s) URL");
+        }
+        if !matches!(decider.location.as_str(), "local" | "cloud") {
+            bail!("decider location must be local or cloud");
+        }
+        if !(0.0..=1.0).contains(&decider.min_confidence) {
+            bail!("decider min_confidence must be within 0..=1");
+        }
+        if decider.max_state_chars < 200 || decider.timeout_sec == 0 {
+            bail!("decider needs max_state_chars >= 200 and a positive timeout_sec");
+        }
+        self.authorize_route(
+            &self.routes.default_action,
+            &CapabilityRequest::new("model.decide", format!("decider:{}", decider.id)),
+        )
+        .context("the enabled decider is not granted to the controller route")?;
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -667,6 +727,51 @@ mod tests {
             .map(|request| request.action)
             .collect::<Vec<_>>();
         assert_eq!(actions, ["sandbox.full_access", "network.connect"]);
+    }
+
+    #[test]
+    fn an_enabled_decider_must_be_granted_and_well_formed() {
+        let root = crate::test_support::project_root();
+        let mut config = ProjectConfig::load(&root).unwrap();
+        config.runtime.decider = Some(DeciderConfig {
+            enabled: true,
+            id: "jev".to_owned(),
+            endpoint: "http://127.0.0.1:18090/v1/decisions".to_owned(),
+            location: "local".to_owned(),
+            min_confidence: 0.6,
+            max_state_chars: 3000,
+            timeout_sec: 10,
+        });
+        assert!(
+            config.validate().is_err(),
+            "ungranted decider must be rejected"
+        );
+        config
+            .capabilities
+            .grants
+            .push(crate::capability::Capability {
+                id: "decider".to_owned(),
+                subjects: vec![config.routes.default_action.clone()],
+                action: "model.decide".to_owned(),
+                resource: "decider:jev".to_owned(),
+                constraints: BTreeMap::new(),
+                effect_class: EffectClass::Pure,
+                revoked: false,
+            });
+        config.validate().unwrap();
+        let decider = config.runtime.decider.as_mut().unwrap();
+        decider.min_confidence = 1.5;
+        assert!(config.validate().is_err());
+        let decider = config.runtime.decider.as_mut().unwrap();
+        decider.min_confidence = 0.6;
+        decider.location = "elsewhere".to_owned();
+        assert!(config.validate().is_err());
+        // A disabled decider is ignored entirely.
+        let decider = config.runtime.decider.as_mut().unwrap();
+        decider.enabled = false;
+        config.capabilities.grants.pop();
+        config.validate().unwrap();
+        assert!(config.active_decider().is_none());
     }
 
     #[test]

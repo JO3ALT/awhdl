@@ -81,7 +81,11 @@ impl ModelManager {
             json!({"profile": profile.id, "host": profile.host}),
             &budget.usage,
         )?;
-        self.start_remote(&profile, host, config).await?;
+        if host.ssh_target.is_empty() {
+            start_local(&profile).await?;
+        } else {
+            self.start_remote(&profile, host, config).await?;
+        }
 
         let deadline = Instant::now()
             + Duration::from_secs(config.runtime.loop_limits.model_start_timeout_sec);
@@ -142,6 +146,8 @@ impl ModelManager {
                 "-o",
                 "BatchMode=yes",
                 "-o",
+                &format!("ConnectTimeout={}", config.runtime.ssh.connect_timeout_sec),
+                "-o",
                 "ExitOnForwardFailure=yes",
                 "-o",
                 "ServerAliveInterval=30",
@@ -172,9 +178,6 @@ impl ModelManager {
         host: &HostConfig,
         config: &ProjectConfig,
     ) -> Result<()> {
-        if host.ssh_target.is_empty() {
-            bail!("local launch profiles are not implemented yet");
-        }
         validate_remote_path(&profile.launch_script)?;
         validate_identifier(&profile.id)?;
         let remote = format!(
@@ -203,6 +206,32 @@ impl ModelManager {
         }
         Ok(())
     }
+}
+
+/// Start a launch script on this machine, detached like the remote launcher so
+/// the model outlives the run. The same path rules apply as for remote scripts.
+async fn start_local(profile: &LaunchProfile) -> Result<()> {
+    validate_remote_path(&profile.launch_script)?;
+    validate_identifier(&profile.id)?;
+    let state_dir = std::env::var_os("HOME")
+        .map(|home| Path::new(&home).join(".local/state/aiconductor"))
+        .context("HOME is not set")?;
+    std::fs::create_dir_all(&state_dir)
+        .with_context(|| format!("failed to create {}", state_dir.display()))?;
+    let log = std::fs::File::create(state_dir.join(format!("{}.log", profile.id)))
+        .context("failed to create local model log")?;
+    let status = Command::new("setsid")
+        .args(["-f", &profile.launch_script])
+        .stdin(std::process::Stdio::null())
+        .stdout(log.try_clone()?)
+        .stderr(log)
+        .status()
+        .await
+        .context("failed to invoke local model launcher")?;
+    if !status.success() {
+        bail!("local model launcher failed with status {status}");
+    }
+    Ok(())
 }
 
 fn model_name_matches(observed: &str, expected: &str) -> bool {
