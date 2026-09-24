@@ -1,0 +1,32 @@
+-- 02: a deterministic device and a deterministic verdict on its result.
+entity prolog_verdict is
+    port (
+        task    : in  text<internal>;
+        verdict : out text<internal>
+    );
+end prolog_verdict;
+
+architecture checked of prolog_verdict is
+    device rules : deterministic generic (location => local, route => "logic_rules");
+    signal result : data<internal>;
+begin
+    process(task)
+    begin
+        rules.run_prolog(task) timeout 1 min -> result;
+    end process;
+
+    -- The verdict is computed by AWHDL, not by a model.
+    process(result)
+    begin
+        if result.structured.solution_count > 0 then
+            verdict <= "holds";
+        else
+            verdict <= "does not hold";
+        end if;
+    end process;
+
+    process(rules.failed)
+    begin
+        verdict <= "prolog rejected the input";
+    end process;
+end checked;

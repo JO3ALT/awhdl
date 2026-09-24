@@ -1,0 +1,17 @@
+-- 01: one entity, one architecture, one device, one process.
+entity hello is
+    port (
+        task   : in  text<internal>;
+        answer : out text<internal>
+    );
+end hello;
+
+architecture behavioral of hello is
+    -- An agent device bound to the configured "initial_coding" model route.
+    device coder : agent generic (location => local, route => "initial_coding");
+begin
+    process(task)
+    begin
+        coder.run(task) -> answer;
+    end process;
+end behavioral;

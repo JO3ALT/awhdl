@@ -1,0 +1,16 @@
+-- 06: restricted data must never reach a cloud device. aic check rejects this.
+entity leak is
+    port (
+        secret_notes : in  text<restricted>;
+        advice       : out text<restricted>
+    );
+end leak;
+
+architecture unsafe of leak is
+    device reviewer : agent generic (location => cloud, route => "deep_reasoning");
+begin
+    process(secret_notes)
+    begin
+        reviewer.codex(secret_notes) -> advice;
+    end process;
+end unsafe;

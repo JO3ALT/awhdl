@@ -1,0 +1,33 @@
+-- 05: two checks started together; a barrier fires when both have results.
+entity two_checks is
+    port (
+        rules_task : in  text<internal>;
+        proof_task : in  text<internal>;
+        summary    : out text<internal>
+    );
+end two_checks;
+
+architecture joined of two_checks is
+    device rules : deterministic generic (location => local, route => "logic_rules");
+    device prover : deterministic generic (location => local, route => "logic_proof");
+    signal rule_result, proof_result : data<internal>;
+    barrier both (rule_result, proof_result);
+begin
+    process(proof_task)
+    begin
+        parallel
+            rules.run_prolog(rules_task) -> rule_result;
+            prover.check_lean_code(proof_task) -> proof_result;
+        end parallel;
+    end process;
+
+    process(both.ready)
+    begin
+        summary <= "rules and proof both returned";
+    end process;
+
+    process(prover.failed)
+    begin
+        summary <= "the proof was rejected";
+    end process;
+end joined;

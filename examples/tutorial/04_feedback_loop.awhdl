@@ -1,0 +1,42 @@
+-- 04: a feedback loop that repeats a device call until a condition holds.
+entity kdb_loop is
+    port (
+        code   : in  text<internal>;
+        rounds : out data<internal>;
+        last   : out data<internal>
+    );
+end kdb_loop;
+
+architecture feedback of kdb_loop is
+    device q : mcp generic (location => local, route => "table_analysis");
+    signal round : data<internal> := 0;
+    signal result : data<internal>;
+    budget loop_budget is
+        iterations <= 20;
+        tool_calls <= 5;
+    end budget;
+begin
+    process(code)
+    begin
+        round <= 1;
+    end process;
+
+    -- Each change of round runs one more call, until three rounds are done.
+    process(round)
+    begin
+        if round >= 1 and round <= 3 then
+            q.run_q(code) timeout 1 min -> result;
+        end if;
+    end process;
+
+    -- q.done fires after every successful call, even when the result is
+    -- unchanged; a signal event would fire only when its value changes.
+    process(q.done)
+    begin
+        last <= result.text;
+        rounds <= round;
+        round <= round + 1;
+    end process;
+
+    assert never (round > 4);
+end feedback;

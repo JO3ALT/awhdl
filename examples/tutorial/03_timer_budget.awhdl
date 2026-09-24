@@ -1,0 +1,26 @@
+-- 03: delta cycles driven by a timer, bounded by a budget. No devices.
+entity ticker is
+    port (
+        ticks : out data<internal>
+    );
+end ticker;
+
+architecture counting of ticker is
+    timer tick : period 1 sec;
+    signal count : data<internal> := 0;
+    budget run_budget is
+        wall_time <= 3 sec;
+    end budget;
+begin
+    process(tick)
+    begin
+        count <= count + 1;
+    end process;
+
+    process(count)
+    begin
+        ticks <= count;
+    end process;
+
+    assert always (count <= 10);
+end counting;
