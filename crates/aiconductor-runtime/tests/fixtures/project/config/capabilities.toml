@@ -18,9 +18,17 @@ effect_class = "pure"
 
 [[grants]]
 id = "large_model"
-subjects = ["initial_coding"]
+subjects = ["loop", "initial_coding"]
 action = "model.chat"
 resource = "model:qwen3.8-27b-q5km"
+effect_class = "pure"
+
+# Controller candidate for comparisons (aiconductor run --controller).
+[[grants]]
+id = "devstral_controller"
+subjects = ["loop"]
+action = "model.chat"
+resource = "model:devstral-small-2-24b"
 effect_class = "pure"
 
 [[grants]]

@@ -21,6 +21,12 @@ enum Commands {
     Run {
         #[arg(long, default_value = "-")]
         prompt: String,
+        /// Use only this launch profile as the controller (no fallbacks).
+        #[arg(long)]
+        controller: Option<String>,
+        /// Override whether the configured decider is used.
+        #[arg(long, value_parser = ["on", "off"])]
+        decider: Option<String>,
     },
     /// Compile and run an AWHDL design; device calls use configured routes.
     RunDesign {
@@ -38,12 +44,22 @@ async fn main() -> Result<()> {
         .with_writer(io::stderr)
         .init();
     let cli = Cli::parse();
-    let config = ProjectConfig::load(&cli.project_root)?;
+    let mut config = ProjectConfig::load(&cli.project_root)?;
     match cli.command {
         Commands::Check => {
             println!("configuration ok: {}", config.root.display());
         }
-        Commands::Run { prompt } => {
+        Commands::Run {
+            prompt,
+            controller,
+            decider,
+        } => {
+            if let Some(profile) = controller {
+                config.override_controller(&profile)?;
+            }
+            if let Some(setting) = decider {
+                config.set_decider_enabled(setting == "on")?;
+            }
             let prompt = read_prompt(&prompt)?;
             let engine = Engine::new(config)?;
             println!("{}", engine.run(&prompt).await?);

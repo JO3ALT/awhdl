@@ -15,6 +15,9 @@ pub struct ProjectConfig {
     pub routes: RoutingConfig,
     pub mcp: McpInventory,
     pub capabilities: CapabilityPolicy,
+    /// Use only the default orchestrator as controller, without fallbacks.
+    /// Set by an explicit controller override so comparisons stay unmixed.
+    pub controller_strict: bool,
 }
 
 impl ProjectConfig {
@@ -35,6 +38,7 @@ impl ProjectConfig {
             routes,
             mcp,
             capabilities,
+            controller_strict: false,
         };
         config.validate()?;
         Ok(config)
@@ -277,6 +281,28 @@ impl ProjectConfig {
 
     pub fn action(&self, id: &str) -> Option<&ActionConfig> {
         self.routes.actions.get(id)
+    }
+
+    /// Run with this launch profile as the only controller model.
+    pub fn override_controller(&mut self, profile: &str) -> Result<()> {
+        if self.profile(profile).is_none() {
+            bail!("unknown controller profile: {profile}");
+        }
+        self.models.default_orchestrator = profile.to_owned();
+        self.controller_strict = true;
+        self.validate()
+            .with_context(|| format!("controller {profile} is not usable"))
+    }
+
+    /// Enable or disable the configured decider for this run.
+    pub fn set_decider_enabled(&mut self, enabled: bool) -> Result<()> {
+        let decider = self
+            .runtime
+            .decider
+            .as_mut()
+            .context("no [decider] is configured")?;
+        decider.enabled = enabled;
+        self.validate()
     }
 
     /// Whether the planner may choose cloud routes for this instruction.
@@ -755,6 +781,24 @@ mod tests {
             .map(|request| request.action)
             .collect::<Vec<_>>();
         assert_eq!(actions, ["sandbox.full_access", "network.connect"]);
+    }
+
+    #[test]
+    fn controller_override_is_strict_and_must_be_granted() {
+        let root = crate::test_support::project_root();
+        let mut config = ProjectConfig::load(&root).unwrap();
+        assert!(!config.controller_strict);
+        assert!(config.override_controller("no-such-profile").is_err());
+        // A model only granted to japanese_polishing cannot become the controller.
+        let mut polishing = config.clone();
+        assert!(
+            polishing
+                .override_controller("llm-jp-4-8b-thinking-bf16")
+                .is_err()
+        );
+        config.override_controller("qwen3vl-8b-rocm").unwrap();
+        assert_eq!(config.models.default_orchestrator, "qwen3vl-8b-rocm");
+        assert!(config.controller_strict);
     }
 
     #[test]

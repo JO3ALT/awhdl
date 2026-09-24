@@ -232,7 +232,12 @@ impl Engine {
         let mut budget = Budget::new(self.config.runtime.loop_limits.clone());
         audit.event(
             "run_started",
-            json!({"prompt_bytes": prompt.len()}),
+            json!({
+                "prompt_bytes": prompt.len(),
+                "controller": self.config.models.default_orchestrator,
+                "controller_strict": self.config.controller_strict,
+                "decider": self.config.active_decider().map(|decider| &decider.id),
+            }),
             &budget.usage,
         )?;
 
@@ -539,7 +544,9 @@ impl Engine {
     ) -> Result<LaunchProfile> {
         let controller = &self.config.routes.default_action;
         let mut candidates = vec![self.config.models.default_orchestrator.as_str()];
-        if let Some(route) = self.config.action(controller) {
+        if !self.config.controller_strict
+            && let Some(route) = self.config.action(controller)
+        {
             candidates.extend(
                 route
                     .fallback
