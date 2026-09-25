@@ -22,6 +22,7 @@ aic graph <file.awhdl>
     [--show-policies]            show budgets and assertions (not in petri or activity)
     [--show-internal]            also show .done/.failed/.timeout that no process waits for
     [--compact]                  one-line labels; security-significant detail is kept
+    [--no-lanes]                 do not draw the local/cloud lanes (boundaries)
     [--validate-only]            check and project only; write nothing
 ```
 
@@ -62,6 +63,16 @@ A design that fails the check is not drawn. An invalid design is never drawn as 
 | `security` | Local and cloud zones, the orchestrator's signal store split into class groups, classified flows, cloud egress (also checked at runtime), human approval, and **denied flows**. A denial is a dotted edge labelled `DENIED` (`-.-x` in Mermaid; red, dotted, `tee` head in DOT), never an ordinary edge. When a denial covers a whole class group, it is drawn once from the group (JSON keeps one edge per value) |
 | `activity` | A UML activity diagram with one activity per process and per barrier: start → accept the sensitivity events → actions (calls, assignments), `if` decisions and merges, `parallel` fork/join bars, a switch per call outcome → send signals for observed events → end. As in UML, activities connect through signal names |
 | `state` | Declared states only. The v0.1 profile has no state types, so this view is currently always refused with exit status 4. States are never inferred |
+
+Declassification (`x <= declassify e using d;`) is drawn in every view as the only place a class goes down: a
+thick purple `declassified` edge in the security view, competing `granted` (light purple) and `refused`
+transitions in the petri view, and a release action with a granted / refused switch in the activity view. See
+`examples/secure_cooperation.awhdl` (a local LLM anonymizes, a check and a human release, a cloud AI analyzes).
+
+The activity, petri and behavior views draw **lanes** (boundaries) from the device `location`: only calls of
+cloud devices go into the `cloud (external)` lane, and everything the orchestrator runs goes into
+`local (protected)`. PlantUML draws swimlanes, DOT and Mermaid filled frames, and edges crossing the boundary
+are thick. A design with a single lane gets none.
 
 Color never carries meaning alone; line style does: solid is synchronous data or control, dashed is
 asynchronous or event-driven, thick is a checked boundary crossing (cloud egress, human approval), and a
@@ -141,6 +152,12 @@ flowchart TD
   process).
 - A device of kind `human` becomes an `approval` node, and flows into it are `approval_gate` edges.
 
+## Validating the output
+
+`tools/graph-validate` draws every example in every view and format and checks that each output parses as
+Mermaid, DOT, PlantUML, PNML or JSON (`setup.sh`, then `validate.sh`; `--render` also renders PNGs). See
+[tools/graph-validate/README.md](../tools/graph-validate/README.md).
+
 ## Safety
 
 Every label is escaped. Mermaid output turns everything except letters, digits and a few punctuation
@@ -152,7 +169,7 @@ than public in the security view, are kept. No node or edge is dropped.
 
 ## Limits in the v0.1 profile
 
-- `declassifier` and gateway devices are outside the profile, so the security view never shows a
-  classification being lowered.
+- Gateway devices are outside the profile, so cloud egress is drawn as an edge property (also checked
+  at runtime).
 - The `state` view is unavailable until declared state types exist.
 - `--configuration` is not supported because the language has no configurations.

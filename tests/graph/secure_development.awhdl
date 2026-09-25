@@ -3,8 +3,9 @@ entity secure_development is
     port (
         task   : in  text<internal>;
         source : in  text<restricted>;
+        note   : in  text<public>;
         result : out text<restricted>;
-        status : out text<internal>
+        status : out text<restricted>
     );
 end secure_development;
 
@@ -17,8 +18,7 @@ architecture hybrid of secure_development is
     signal candidate : text<restricted>;
     signal build, tests : data<restricted>;
     signal review : text<internal>;
-    signal note : text<public> := "ready";
-    signal retry : number<internal> := 0;
+    signal retry : number<restricted> := 0;
     timer heartbeat : period 30 sec;
     barrier validated (build, tests);
     budget run_budget is
@@ -55,7 +55,8 @@ begin
         end if;
     end process;
 
-    process(status)
+    -- Only public data triggers and feeds the cloud reviewer (no implicit flow).
+    process(note)
     begin
         cloud_reviewer.review(note) -> review;
     end process;

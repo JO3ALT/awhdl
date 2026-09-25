@@ -24,6 +24,34 @@ pub struct BoundDevice {
     pub clearance: Option<Class>,
 }
 
+/// A declassifier: the range it may release and the trusted means that must
+/// all allow a release (SECURITY_SPEC, declassification).
+#[derive(Debug, Clone, Serialize)]
+pub struct Declassifier {
+    pub name: String,
+    pub from: Class,
+    pub to: Class,
+    /// A local deterministic device and the method that must return `{"pass": true}`.
+    pub filter: Option<(String, String)>,
+    /// Human approval of the exact content.
+    pub approval: bool,
+}
+
+/// What a human is asked to release: the exact content, never only a summary.
+#[derive(Debug, Clone, Serialize)]
+pub struct ReleaseRequest {
+    pub declassifier: String,
+    pub from: Class,
+    pub to: Class,
+    pub source: String,
+    pub target: String,
+    /// Where the release happens: the process that runs it and the statement,
+    /// so the human judges the release in its context, not only its content.
+    pub context: String,
+    pub content: Json,
+    pub content_sha256: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct SignalInfo {
     pub class: Class,
@@ -47,6 +75,7 @@ pub struct CompiledDesign {
     pub architecture: String,
     pub signals: BTreeMap<String, SignalInfo>,
     pub devices: BTreeMap<String, BoundDevice>,
+    pub declassifiers: BTreeMap<String, Declassifier>,
     pub processes: Vec<ProcessStmt>,
     pub assertions: Vec<Assertion>,
     /// Lowest class that may never reach a cloud device.
@@ -106,6 +135,7 @@ pub fn compile(source: &str, config: &ProjectConfig) -> Result<CompiledDesign> {
         }
     }
     let mut devices = BTreeMap::new();
+    let mut declassifiers = BTreeMap::new();
     let mut timers = BTreeMap::new();
     let mut barriers = BTreeMap::new();
     let mut limits = DesignLimits::default();
@@ -127,6 +157,10 @@ pub fn compile(source: &str, config: &ProjectConfig) -> Result<CompiledDesign> {
                         },
                     );
                 }
+            }
+            // A declassifier has no route: it is a policy over other devices.
+            Declaration::Device(device) if device.device_type == "declassifier" => {
+                declassifiers.insert(device.name.clone(), declassifier(device)?);
             }
             Declaration::Device(device) => {
                 devices.insert(device.name.clone(), bind(device, config)?);
@@ -192,6 +226,7 @@ pub fn compile(source: &str, config: &ProjectConfig) -> Result<CompiledDesign> {
         architecture: architecture.name.clone(),
         signals,
         devices,
+        declassifiers,
         processes,
         assertions,
         cloud_floor,
@@ -259,6 +294,37 @@ fn bind(device: &awhdl_ast::DeviceDecl, config: &ProjectConfig) -> Result<BoundD
     })
 }
 
+/// Read a declassifier the checker has validated (E219).
+fn declassifier(device: &awhdl_ast::DeviceDecl) -> Result<Declassifier> {
+    let ident = |key: &str| device.generic(key).and_then(|value| value.as_ident());
+    let class = |key: &str| {
+        ident(key)
+            .and_then(parse_class)
+            .with_context(|| format!("declassifier {} needs {key}", device.name))
+    };
+    let filter = match (ident("filter"), ident("filter_method")) {
+        (Some(filter), Some(method)) => Some((filter.to_owned(), method.to_owned())),
+        (None, None) => None,
+        _ => bail!(
+            "declassifier {} needs filter and filter_method together",
+            device.name
+        ),
+    };
+    let approval = ident("approval") == Some("human");
+    ensure!(
+        filter.is_some() || approval,
+        "declassifier {} has no means",
+        device.name
+    );
+    Ok(Declassifier {
+        name: device.name.clone(),
+        from: class("from")?,
+        to: class("to")?,
+        filter,
+        approval,
+    })
+}
+
 fn constant(expr: &Expr) -> Result<Json> {
     ensure!(expr.names().is_empty(), "initial values must be constants");
     evaluate(expr, &|_| Ok(Json::Null))
@@ -273,6 +339,14 @@ pub trait Dispatcher {
         method: &str,
         arguments: &[Json],
     ) -> Result<Json>;
+    /// Ask a human to release exactly this content. Without a trusted human
+    /// channel a release fails closed.
+    async fn approve_release(&mut self, request: &ReleaseRequest) -> Result<bool> {
+        bail!(
+            "no human approver is configured; declassifier {} cannot be approved",
+            request.declassifier
+        )
+    }
     /// Metadata-only audit hook.
     fn record(&mut self, _event: &str, _data: Json) -> Result<()> {
         Ok(())
@@ -563,6 +637,9 @@ impl<'a, D: Dispatcher> DesignRun<'a, D> {
                     SequentialStatement::DeviceCall(call) => {
                         self.call(call, process, writes).await?;
                     }
+                    SequentialStatement::Declassify(release) => {
+                        self.declassify(release, process, writes).await?;
+                    }
                     // Logical parallelism: results commit together at the end of the
                     // delta. The v0.1 runtime dispatches the calls one after another.
                     SequentialStatement::Parallel(parallel) => {
@@ -574,6 +651,107 @@ impl<'a, D: Dispatcher> DesignRun<'a, D> {
             }
             Ok(())
         })
+    }
+
+    /// Release a value under a declassifier: the filter first, then the human;
+    /// anything but an explicit pass and grant writes nothing.
+    async fn declassify(
+        &mut self,
+        release: &awhdl_ast::Declassify,
+        process: usize,
+        writes: &mut DeltaWrites,
+    ) -> Result<()> {
+        let declassifier = self
+            .design
+            .declassifiers
+            .get(&release.declassifier)
+            .with_context(|| format!("unknown declassifier {}", release.declassifier))?
+            .clone();
+        let content = self.eval(&release.value)?;
+        let content_sha256 = crate::effect::sha256_hex(&serde_json::to_vec(&content)?);
+        let mut checks = serde_json::Map::new();
+        let mut allowed = true;
+        if let Some((filter, method)) = &declassifier.filter {
+            let device = self
+                .design
+                .devices
+                .get(filter)
+                .with_context(|| format!("unbound filter device {filter}"))?
+                .clone();
+            self.device_calls += 1;
+            self.dispatcher.record(
+                "design_device_call",
+                json!({"device": device.name, "route": device.route, "method": method, "class": self.class_of(&release.value.expr)}),
+            )?;
+            let verdict = self
+                .dispatcher
+                .call(&device, method, std::slice::from_ref(&content))
+                .await;
+            let pass = matches!(&verdict, Ok(Json::Object(map)) if map.get("pass") == Some(&Json::Bool(true)));
+            checks.insert(
+                "filter".to_owned(),
+                json!(if pass { "pass" } else { "fail" }),
+            );
+            allowed = pass;
+        }
+        if allowed && declassifier.approval {
+            let request = ReleaseRequest {
+                declassifier: declassifier.name.clone(),
+                from: declassifier.from,
+                to: declassifier.to,
+                source: release.value.source.clone(),
+                target: release.target.clone(),
+                context: format!(
+                    "process({}): {} <= declassify {} using {}",
+                    self.design.processes[process].sensitivity.join(", "),
+                    release.target,
+                    release.value.source,
+                    release.declassifier
+                ),
+                content: content.clone(),
+                content_sha256: content_sha256.clone(),
+            };
+            let decision = self.dispatcher.approve_release(&request).await;
+            let granted = matches!(decision, Ok(true));
+            checks.insert(
+                "approval".to_owned(),
+                json!(match decision {
+                    Ok(true) => "granted".to_owned(),
+                    Ok(false) => "denied".to_owned(),
+                    Err(error) => format!("error: {error:#}"),
+                }),
+            );
+            allowed = granted;
+        }
+        self.dispatcher.record(
+            if allowed {
+                "design_declassified"
+            } else {
+                "design_declassify_denied"
+            },
+            json!({
+                "declassifier": declassifier.name,
+                "from": declassifier.from,
+                "to": declassifier.to,
+                "source": release.value.source,
+                "target": release.target,
+                "content_sha256": content_sha256,
+                "checks": checks,
+            }),
+        )?;
+        self.device_status
+            .insert(declassifier.name.clone(), allowed);
+        if allowed {
+            writes.events.insert(format!("{}.done", declassifier.name));
+            writes
+                .signals
+                .push((release.target.clone(), content, process));
+        } else {
+            writes
+                .events
+                .insert(format!("{}.failed", declassifier.name));
+        }
+        Ok(())
     }
 
     async fn call(
@@ -766,6 +944,9 @@ mod tests {
         calls: Vec<(String, String, Vec<Json>)>,
         respond: Respond,
         delay: Duration,
+        /// `None`: no human approver (the trait default fails closed).
+        approve: Option<bool>,
+        asked: Vec<ReleaseRequest>,
     }
 
     fn fake(respond: impl Fn(&str, &str, &[Json]) -> Result<Json> + 'static) -> Fake {
@@ -773,6 +954,8 @@ mod tests {
             calls: Vec::new(),
             respond: Box::new(respond),
             delay: Duration::ZERO,
+            approve: None,
+            asked: Vec::new(),
         }
     }
 
@@ -788,6 +971,14 @@ mod tests {
                 .push((device.name.clone(), method.to_owned(), arguments.to_vec()));
             tokio::time::sleep(self.delay).await;
             (self.respond)(&device.name, method, arguments)
+        }
+
+        async fn approve_release(&mut self, request: &ReleaseRequest) -> Result<bool> {
+            self.asked.push(request.clone());
+            match self.approve {
+                Some(granted) => Ok(granted),
+                None => bail!("no human approver"),
+            }
         }
     }
 
@@ -957,6 +1148,79 @@ end flow;
             .unwrap();
         assert_eq!(outcome.status, DesignStatus::Exhausted);
         assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    const RELEASE: &str = r#"
+    device pii : deterministic generic (route => "text_filtering");
+    device release : declassifier generic (from => restricted, to => internal,
+        filter => pii, filter_method => scan, approval => human);
+    signal secret : text<restricted>;
+    signal released : text<internal>;"#;
+
+    const RELEASE_BODY: &str = r#"
+    process(task)
+    begin
+        secret <= task;
+    end process;
+    process(secret)
+    begin
+        released <= declassify secret using release;
+    end process;
+    process(released)
+    begin
+        report <= released;
+    end process;
+    process(release.failed)
+    begin
+        secret <= "refused";
+    end process;
+"#;
+
+    async fn release_run(filter: Json, approve: Option<bool>) -> (DesignOutcome, Fake) {
+        let design = design(RELEASE, RELEASE_BODY).unwrap();
+        let mut fake = fake(move |_, _, _| Ok(filter.clone()));
+        fake.approve = approve;
+        let mut run = DesignRun::new(&design, fake);
+        let outcome = run.run(task("draft")).await.unwrap();
+        (outcome, run.into_dispatcher())
+    }
+
+    #[tokio::test]
+    async fn declassify_releases_only_after_the_filter_and_the_human_allow_it() {
+        // Filter pass and human grant: the content is released as internal.
+        let (outcome, fake) = release_run(json!({"pass": true}), Some(true)).await;
+        assert_eq!(outcome.outputs["report"], json!("draft"));
+        assert_eq!(fake.calls.len(), 1);
+        assert_eq!(fake.calls[0].1, "scan");
+        let asked = &fake.asked[0];
+        assert_eq!(asked.content, json!("draft"));
+        assert!(
+            asked
+                .context
+                .starts_with("process(secret): released <= declassify secret")
+        );
+
+        // Filter fail: the human is never asked and nothing is released.
+        let (outcome, fake) = release_run(json!({"pass": false}), Some(true)).await;
+        assert_eq!(outcome.outputs["report"], Json::Null);
+        assert!(fake.asked.is_empty());
+        // Anything but a boolean `pass: true` fails.
+        let (outcome, _) = release_run(json!({"pass": "yes"}), Some(true)).await;
+        assert_eq!(outcome.outputs["report"], Json::Null);
+
+        // Human denial, and no approver at all, both fail closed.
+        let (outcome, fake) = release_run(json!({"pass": true}), Some(false)).await;
+        assert_eq!(outcome.outputs["report"], Json::Null);
+        // The failure handler rewrites the secret, so the human is asked again
+        // about the new content, and denies again.
+        let contents = fake
+            .asked
+            .iter()
+            .map(|asked| &asked.content)
+            .collect::<Vec<_>>();
+        assert_eq!(contents, [&json!("draft"), &json!("refused")]);
+        let (outcome, _) = release_run(json!({"pass": true}), None).await;
+        assert_eq!(outcome.outputs["report"], Json::Null);
     }
 
     #[tokio::test]

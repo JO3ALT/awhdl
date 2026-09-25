@@ -295,6 +295,7 @@ impl Net<'_, '_, '_> {
         steps.steps += 1;
         let base = format!("transition:p{}.s{}", steps.process, steps.steps);
         match statement {
+            SequentialStatement::Declassify(release) => self.release(&base, release, from, to),
             SequentialStatement::Assignment(assignment) => {
                 let text = format!(
                     "{} <= {}",
@@ -438,6 +439,29 @@ impl Net<'_, '_, '_> {
         to: &str,
         write_output: bool,
     ) {
+        self.outcomes(base, call, from, to, write_output);
+        // The outcomes happen at the device: they sit in its location lane.
+        let prefix = format!("{base}.");
+        let ids = self
+            .b
+            .nodes
+            .iter()
+            .filter(|node| node.id.starts_with(&prefix) && node.kind == NodeKind::Transition)
+            .map(|node| node.id.clone())
+            .collect::<Vec<_>>();
+        for id in ids {
+            self.b.call_lane(&id, self.s, &call.device);
+        }
+    }
+
+    fn outcomes(
+        &mut self,
+        base: &str,
+        call: &DeviceCall,
+        from: &str,
+        to: &str,
+        write_output: bool,
+    ) {
         let name = format!("{}.{}", call.device, call.method);
         let done_event = format!("{}.done", call.device);
         if write_output && self.wiring.observed(&call.output) {
@@ -496,6 +520,57 @@ impl Net<'_, '_, '_> {
             self.emit(&expired, &format!("{}.timeout", call.device));
             self.emit(&expired, &format!("{}.failed", call.device));
         }
+    }
+}
+
+impl Net<'_, '_, '_> {
+    /// A release either is granted (the target is written, `d.done`) or is
+    /// refused by the filter or the human (`d.failed`); the two compete.
+    fn release(&mut self, base: &str, release: &awhdl_ast::Declassify, from: &str, to: &str) {
+        let name = format!(
+            "declassify {} using {}",
+            clip(&release.value.source),
+            release.declassifier
+        );
+        let span = Some(release.span);
+        let done = format!("{}.done", release.declassifier);
+        let outcomes: Vec<(String, String, bool)> = if self.wiring.observed(&release.target) {
+            [true, false]
+                .into_iter()
+                .map(|changed| {
+                    let word = if changed { "changed" } else { "unchanged" };
+                    (
+                        format!("{base}.granted.{word}"),
+                        format!("{name} granted · {} {word}", release.target),
+                        changed,
+                    )
+                })
+                .collect()
+        } else {
+            vec![(
+                format!("{base}.granted"),
+                format!("{name} granted · {} written", release.target),
+                false,
+            )]
+        };
+        for (id, label, changed) in outcomes {
+            self.transition(&id, &label, span, Vec::new());
+            self.b.nodes[self.b.node_index[&id]]
+                .metadata
+                .insert("release".to_owned(), "granted".to_owned());
+            self.arc(from, &id, EdgeKind::Call);
+            self.arc(&id, to, EdgeKind::Declassification)
+                .security_significant = true;
+            self.emit(&id, &done);
+            if changed {
+                self.emit_change(&id, &release.target);
+            }
+        }
+        let refused = format!("{base}.refused");
+        self.transition(&refused, &format!("{name} refused"), span, Vec::new());
+        self.arc(from, &refused, EdgeKind::Call);
+        self.arc(&refused, to, EdgeKind::Result);
+        self.emit(&refused, &format!("{}.failed", release.declassifier));
     }
 }
 

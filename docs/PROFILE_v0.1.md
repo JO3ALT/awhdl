@@ -75,11 +75,11 @@ functions; the profile test verifies that they exist and that any `yes` or
 | filesystem scope for planner paths | security | v0.1 | n/a | n/a | yes | yes | `planner_paths_outside_granted_scopes_are_denied`, `workspace_paths_are_scoped_and_outside_paths_are_denied` |
 | audit JSONL, metadata only | security | v0.1 | n/a | n/a | yes | yes | `run_store_dispatches_only_with_a_persisted_single_use_approval` |
 | graph views (aic graph) | tooling | v0.1 | n/a | yes | n/a | yes | `structure_places_devices_in_their_zones`, `security_view_lets_only_cleared_data_reach_the_cloud`, `behavior_view_shows_forks_generation_aware_joins_and_the_retry_loop`, `the_state_view_does_not_invent_states`, `petri_view_is_a_place_transition_net`, `activity_view_has_one_structured_activity_per_process_and_barrier`, `plantuml_and_pnml_render_only_the_view_they_can_express` |
-| declassifier | security | v0.2 | no | no | no | no | — |
+| declassifier | security | v0.2 | yes | yes | yes | yes | `only_a_declassifier_lowers_a_class`, `declassifiers_must_lower_through_trusted_means`, `declassify_releases_only_after_the_filter_and_the_human_allow_it`, `declassification_asks_the_human_approver_with_a_bound_hash` |
 | HTTP MCP transport | device | v0.2 | n/a | n/a | no | no | — |
 | per-host network policy enforcement | security | v0.2 | n/a | n/a | no | no | Codex network is all-or-nothing (host:* only). |
 | cloud DLP / egress inspection | security | v0.2 | n/a | n/a | no | no | — |
-| taint / information-flow check | security | v0.2 | no | no | no | no | — |
+| taint / information-flow check | security | v0.2 | n/a | yes | no | yes | `implicit_flows_through_triggers_conditions_and_outcomes_are_rejected`, `restricted_data_cannot_reach_a_cloud_device` |
 | advanced cancellation | runtime | v0.2 | no | no | partial | no | Runtime can mark an Invocation cancelled; no provider stop guarantee. |
 | CLI resume and run lock | runtime | v0.2 | n/a | n/a | no | no | — |
 | transaction / time-limited approval scopes | security | v0.2 | n/a | n/a | no | no | — |

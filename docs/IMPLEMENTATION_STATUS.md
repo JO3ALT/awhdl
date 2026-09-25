@@ -12,8 +12,8 @@
 ## Release state (2026-09-23)
 
 - Specification: draft v0.2; implementation scope: PROFILE_v0.1.
-- Compiler: parser, static checker (structure `E2xx`, information flow `E3xx`,
-  profile `E4xx`) and compilation to the Rust runtime with route binding.
+- Compiler: parser, static checker (structure `E2xx`, information flow `E3xx`
+  including implicit flows `E304`-`E306`, profile `E4xx`) and compilation to the Rust runtime with route binding.
 - CLI: `aic check <file>`; `aic graph <file>` ([drawing designs](GRAPH.md)); `aiconductor run-design <file> --input name=value`.
 - Runtime: delta-cycle execution of processes, timers, timeouts, parallel
   blocks, barriers, budgets and assertions; device calls through the engine's
@@ -24,6 +24,9 @@
 - entities, ports, architectures;
 - devices of kind `agent`, `mcp`, `deterministic` with `generic (...)`
   (`route`, `location`, `clearance`);
+- `declassifier` devices (`from`, `to`, `filter`, `filter_method`, `approval`) and
+  `x <= declassify e using d;` (declassification by a deterministic check, human
+  approval, or both);
 - signals with classification labels and constant initial values;
 - `timer`, `budget`, `barrier` declarations;
 - `assert always (...)`, `assert never (...)`, `assert never (<class> -> <location>)`;

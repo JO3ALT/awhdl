@@ -64,7 +64,17 @@ pub struct Graph {
     pub nodes: Vec<Node>,
     pub edges: Vec<Edge>,
     pub groups: Vec<Group>,
+    /// Location lanes that appear in the view, most protected first.
+    pub lanes: Vec<Lane>,
     pub annotations: Vec<String>,
+}
+
+/// A location lane: the boundary between the protected (local) region and
+/// external ones such as the cloud, taken from device `location` generics.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Lane {
+    pub id: String,
+    pub label: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -136,6 +146,9 @@ pub struct Node {
     pub metadata: BTreeMap<String, String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub group: Option<String>,
+    /// Location lane (activity, petri and behavior views).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lane: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

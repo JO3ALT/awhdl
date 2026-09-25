@@ -101,12 +101,15 @@ cargo test --workspace
 cargo run -p conductor-cli -- check examples/hello.awhdl
 cargo run -p conductor-cli -- check examples/hello.awhdl --output json
 cargo run -p conductor-cli -- graph examples/tutorial/05_parallel_barrier.awhdl --view behavior
+cargo run -p conductor-cli -- graph examples/secure_cooperation.awhdl --view petri --format dot | dot -Tsvg -o petri.svg
 ```
 
 Parse and structural errors return a non-zero status and a source location. `aic graph` draws a checked design as
 a Mermaid, Graphviz DOT or JSON diagram (structure, behavior, petri, security and activity views; the activity view also as PlantUML and the
 petri view as PNML;
-see [Drawing designs](docs/GRAPH.md)).
+see [Drawing designs](docs/GRAPH.md)). `examples/secure_cooperation.awhdl` is the
+official sample: a local LLM anonymizes, a deterministic check and a human
+release the result, and a cloud AI analyzes it.
 
 ## Documentation
 

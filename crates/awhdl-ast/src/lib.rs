@@ -200,10 +200,17 @@ pub enum Assertion {
 pub enum SequentialStatement {
     DeviceCall(DeviceCall),
     Assignment(Assignment),
+    /// `target <= declassify value using declassifier;`
+    Declassify(Declassify),
     If(IfStmt),
     Parallel(ParallelStmt),
-    Assert { condition: Expression, span: Span },
-    Null { span: Span },
+    Assert {
+        condition: Expression,
+        span: Span,
+    },
+    Null {
+        span: Span,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -221,6 +228,16 @@ pub struct DeviceCall {
 pub struct Assignment {
     pub target: String,
     pub value: Expression,
+    pub span: Span,
+}
+
+/// The only way to lower a classification: a release checked by a
+/// `declassifier` device (SECURITY_SPEC, declassification).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Declassify {
+    pub target: String,
+    pub value: Expression,
+    pub declassifier: String,
     pub span: Span,
 }
 

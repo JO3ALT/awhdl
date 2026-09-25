@@ -56,6 +56,8 @@ the parser (`awhdl-parser/src/awhdl.pest`). Anything else is a syntax error.
 device name : agent | mcp | deterministic generic (key => value, ...);
     -- keys used by v0.1: route => "<configured action>", location => local | cloud,
     -- clearance => public | internal | restricted
+device name : declassifier generic (from => <class>, to => <class>,
+    [filter => <deterministic device>, filter_method => <method>,] [approval => human]);
 signal a, b : type<class> := <constant>;
 timer name : period <n> ms|sec|min|hour|day;
 budget name is iterations <= n; wall_time <= <time>; tool_calls <= n; model_calls <= n; end budget;
@@ -70,6 +72,7 @@ process(name, name.changed, device.done, device.failed, device.timeout, timer, b
 begin
     device.method(<expr>, ...) [timeout <time>] -> signal;
     signal <= <expr>;
+    signal <= declassify <expr> using <declassifier>;
     if <expr> then ... elsif <expr> then ... else ... end if;
     parallel device.method(...) -> signal; ... end parallel;
     assert <expr>;
@@ -94,8 +97,45 @@ process and is `E206`.
 Static semantics (checker diagnostics): `E2xx` structure (unknown or duplicate
 names, writes to `in` ports, invalid budget keys or non-positive times, barrier
 members that are not signals, two parallel branches writing one signal);
-`E3xx` information flow (see SECURITY_SPEC); `E4xx` constructs that the language
+`E3xx` information flow (explicit flows `E301`-`E303`, implicit flows
+`E304`-`E306`; see SECURITY_SPEC); `E4xx` constructs that the language
 defines but PROFILE_v0.1 excludes (`confidential`, `secret`, `sandbox`,
-`private_cloud`, `external`, `declassifier`) or that are unknown. `case`,
-`await`, `type` / FSM declarations, `retry`, `approve`, `policy`, `export`,
-`configuration` and temporal assertions are not in v0.1 and do not parse.
+`private_cloud`, `external`) or that are unknown.
+
+### Declassification (implemented, 2026-09-25)
+
+Only a `declassify` statement using a `declassifier` device may lower a class.
+A declassifier declares the range it may release (`from` to `to`) and how a
+release is authorized. Choose at least one means; when both are given, both are
+required:
+
+- `filter => <device>`, `filter_method => <method>`: a deterministic check by a
+  `deterministic` device located `local`.
+- `approval => human`: human approval by the runtime's configured approver
+  (HumanPort in approver mode), who sees the content to be released.
+
+```vhdl
+device pii_check : deterministic generic (location => local, route => "pii_filter");
+device release : declassifier generic (from => restricted, to => internal,
+    filter => pii_check, filter_method => scan, approval => human);
+...
+summary <= declassify draft using release;
+```
+
+Static rules (checker):
+
+- `E219`: an invalid declassifier declaration: `from` or `to` missing, `to` not
+  weaker than `from`, no means, a `filter` that is not a `local` `deterministic`
+  device, a `filter` without `filter_method`, an `approval` other than `human`,
+  or a declassifier whose `location` is not `local`.
+- `E220`: the device after `using` is not a declassifier, or a declassifier is
+  called like an ordinary device.
+- `E307`: the released expression's class is stronger than the declassifier's `from`.
+- A release has class `to`. Storing it in a signal weaker than `to` is `E303`;
+  a context stronger than the target is `E304`.
+- Whether a release succeeds depends on its content, so the declassifier's
+  `done` and `failed` events have the strongest of the released expression's
+  class and the context class (SECURITY_SPEC, implicit flows).
+
+`case`, `await`, `type` / FSM declarations, `retry`, `approve`, `policy`,
+`export`, `configuration` and temporal assertions are not in v0.1 and do not parse.

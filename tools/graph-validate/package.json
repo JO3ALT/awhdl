@@ -1,0 +1,13 @@
+{
+  "name": "awhdl-graph-validate",
+  "private": true,
+  "description": "Development-only validators and renderers for aic graph output",
+  "type": "module",
+  "dependencies": {
+    "@hpcc-js/wasm-graphviz": "1.29.1",
+    "dompurify": "3.4.16",
+    "jsdom": "22.1.0",
+    "mermaid": "12.0.0",
+    "puppeteer": "22.15.0"
+  }
+}

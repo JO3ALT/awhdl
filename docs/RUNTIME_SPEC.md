@@ -324,3 +324,9 @@ writes and runs `on timeout`. `parallel` results commit together; v0.1
 dispatches its calls sequentially. A run completes only with every Effect
 resolved. Signal values are kept in memory; audit records signal names and
 classes, never values.
+
+`x <= declassify e using d;` evaluates `e` and applies `d`'s means in order
+(the deterministic check, then human approval; SECURITY_SPEC,
+declassification). Only when every means allows it is `x` written (with `d`'s
+`to` class) and `d.done` raised; otherwise nothing is written and `d.failed` is
+raised. The check's call takes the same path as any device call.

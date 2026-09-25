@@ -250,6 +250,7 @@ impl Act<'_, '_, '_> {
         self.steps += 1;
         let step = format!("s{}", self.steps);
         match statement {
+            SequentialStatement::Declassify(release) => Some(self.release(&step, release)),
             SequentialStatement::Assignment(assignment) => {
                 let action = self.node(
                     &step,
@@ -360,6 +361,80 @@ impl Act<'_, '_, '_> {
         }
     }
 
+    /// A release action, then a switch on granted/refused when observed.
+    fn release(&mut self, step: &str, release: &awhdl_ast::Declassify) -> Region {
+        let (range, means) = self
+            .s
+            .device(&release.declassifier)
+            .map(super::release_terms)
+            .unwrap_or_default();
+        let action = self.node(
+            step,
+            NodeKind::Action,
+            &format!(
+                "{} <= declassify {} using {}",
+                release.target,
+                clip(&release.value.source),
+                release.declassifier
+            ),
+            Some(release.span),
+            vec![range, means],
+        );
+        self.b.nodes[self.b.node_index[&action]]
+            .metadata
+            .insert("release".to_owned(), "granted".to_owned());
+        let device = &release.declassifier;
+        let changed = self.observes(&release.target);
+        let done = self.observes(&format!("{device}.done"));
+        let failed = self.observes(&format!("{device}.failed"));
+        if !(done || failed) {
+            if !changed {
+                return (action.clone(), action);
+            }
+            let send = self.send(
+                &format!("{step}.send"),
+                &format!("{} changed", release.target),
+            );
+            return self
+                .sequence(vec![(action.clone(), action), send])
+                .expect("two regions");
+        }
+        let decision = self.node(
+            &format!("{step}.outcome"),
+            NodeKind::Decision,
+            device,
+            Some(release.span),
+            Vec::new(),
+        );
+        let merge = self.node(
+            &format!("{step}.outcome.merge"),
+            NodeKind::Merge,
+            "",
+            None,
+            Vec::new(),
+        );
+        self.pair(&decision, "merge", &merge, "switch");
+        self.flow(&action, &decision, None);
+        let mut granted = Vec::new();
+        if changed {
+            granted.push(self.send(
+                &format!("{step}.changed"),
+                &format!("{} changed", release.target),
+            ));
+        }
+        if done {
+            granted.push(self.send(&format!("{step}.done"), &format!("{device}.done")));
+        }
+        let refused =
+            failed.then(|| self.send(&format!("{step}.failed"), &format!("{device}.failed")));
+        let arms = vec![
+            ("granted".to_owned(), self.sequence(granted)),
+            ("refused".to_owned(), refused),
+        ];
+        self.branches(&decision, &merge, arms);
+        (action, merge)
+    }
+
     /// A call action, then a switch on its outcome when an outcome event is
     /// observed. A sequential call writes its output on success.
     fn call(&mut self, step: &str, call: &DeviceCall, write_output: bool) -> Region {
@@ -380,6 +455,7 @@ impl Act<'_, '_, '_> {
             .map(|limit| vec![format!("timeout {}", duration(limit.millis))])
             .unwrap_or_default();
         let action = self.node(step, NodeKind::Action, &label, Some(call.span), significant);
+        self.b.call_lane(&action, self.s, &call.device);
         let changed = write_output && self.observes(&call.output);
         let device = &call.device;
         let done = self.observes(&format!("{device}.done"));

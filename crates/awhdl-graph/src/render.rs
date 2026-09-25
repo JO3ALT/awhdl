@@ -117,6 +117,43 @@ fn members<'g>(graph: &'g Graph, group: Option<&str>) -> Vec<&'g Node> {
         .collect()
 }
 
+/// Lanes are drawn when the view has at least two (the local/cloud boundary).
+fn lanes_drawn(graph: &Graph) -> bool {
+    graph.lanes.len() >= 2
+}
+
+fn in_lane(node: &Node, lane: Option<&str>) -> bool {
+    lane.is_none_or(|lane| node.lane.as_deref() == Some(lane))
+}
+
+/// Whether a group, or any group nested in it, has a node in `lane`.
+fn group_in_lane(graph: &Graph, group: &str, lane: Option<&str>) -> bool {
+    graph
+        .nodes
+        .iter()
+        .any(|node| node.group.as_deref() == Some(group) && in_lane(node, lane))
+        || child_groups(graph, Some(group))
+            .iter()
+            .any(|child| group_in_lane(graph, &child.id, lane))
+}
+
+/// Fill and border of a lane; the lane label carries the meaning too.
+fn lane_colors(lane: &str) -> (&'static str, &'static str) {
+    match lane {
+        "local" => ("#edf7ed", "#2e7d32"),
+        "cloud" => ("#e8f0fb", "#1565c0"),
+        _ => ("#f3f3f3", "#616161"),
+    }
+}
+
+/// A lane label for renderers that print it raw: letters, digits, spaces,
+/// parentheses and `_-.` only (lane labels come from location names).
+fn lane_label(text: &str) -> String {
+    text.chars()
+        .filter(|ch| ch.is_ascii_alphanumeric() || " ()_-.".contains(*ch))
+        .collect()
+}
+
 /// A single comment line: control characters (newlines included) become spaces.
 fn comment(text: &str) -> String {
     text.chars()
@@ -285,9 +322,19 @@ fn mermaid(graph: &Graph) -> String {
     for note in &graph.annotations {
         let _ = writeln!(out, "    %% {}", comment(note));
     }
-    mermaid_group(graph, None, 1, &mut out);
+    if lanes_drawn(graph) {
+        for lane in &graph.lanes {
+            let id = mermaid_id(&format!("lane:{}", lane.id));
+            let _ = writeln!(out, "    subgraph {id}[\"{}\"]", mermaid_text(&lane.label));
+            mermaid_group(graph, None, 2, &mut out, Some(&lane.id));
+            out.push_str("    end\n");
+        }
+    } else {
+        mermaid_group(graph, None, 1, &mut out, None);
+    }
 
     let mut denied = Vec::new();
+    let mut released = Vec::new();
     for (index, drawn) in drawn_edges(graph).iter().enumerate() {
         let edge = drawn.edge;
         let arrow = mermaid_arrow(edge);
@@ -307,6 +354,9 @@ fn mermaid(graph: &Graph) -> String {
         let _ = writeln!(out, "    {from} {arrow}{label} {}", mermaid_id(&edge.to));
         if edge.denied {
             denied.push(index.to_string());
+        }
+        if edge.kind == crate::EdgeKind::Declassification {
+            released.push(index.to_string());
         }
     }
 
@@ -334,12 +384,48 @@ fn mermaid(graph: &Graph) -> String {
             denied.join(",")
         );
     }
+    if !released.is_empty() {
+        let _ = writeln!(
+            out,
+            "    linkStyle {} stroke:#6a1b9a,stroke-width:3px,color:#6a1b9a",
+            released.join(",")
+        );
+    }
+    let granted = graph
+        .nodes
+        .iter()
+        .filter(|node| node.metadata.get("release").map(String::as_str) == Some("granted"))
+        .map(|node| mermaid_id(&node.id))
+        .collect::<Vec<_>>();
+    if !granted.is_empty() {
+        out.push_str("    classDef release fill:#f3e5f5,stroke:#6a1b9a,stroke-width:2px\n");
+        let _ = writeln!(out, "    class {} release", granted.join(","));
+    }
+    if lanes_drawn(graph) {
+        for lane in &graph.lanes {
+            let (fill, border) = lane_colors(&lane.id);
+            let _ = writeln!(
+                out,
+                "    style {} fill:{fill},stroke:{border},stroke-width:2px",
+                mermaid_id(&format!("lane:{}", lane.id))
+            );
+        }
+    }
     out
 }
 
-fn mermaid_group(graph: &Graph, group: Option<&str>, depth: usize, out: &mut String) {
+fn mermaid_group(
+    graph: &Graph,
+    group: Option<&str>,
+    depth: usize,
+    out: &mut String,
+    lane: Option<&str>,
+) {
     let indent = "    ".repeat(depth);
-    for node in members(graph, group) {
+    for node in members(graph, group)
+        .into_iter()
+        .filter(|node| in_lane(node, lane))
+    {
         // In the Petri view a completed call is a transition, drawn as one.
         let (open, close) = match (graph.view, node.kind) {
             (View::Petri, NodeKind::Invocation) => mermaid_shape(NodeKind::Transition),
@@ -354,13 +440,21 @@ fn mermaid_group(graph: &Graph, group: Option<&str>, depth: usize, out: &mut Str
         );
     }
     for child in child_groups(graph, group) {
+        if !group_in_lane(graph, &child.id, lane) {
+            continue;
+        }
+        // A group split across lanes appears once per lane, with its own ID.
+        let id = match lane {
+            Some(lane) => format!("lane:{lane}/group:{}", child.id),
+            None => format!("group:{}", child.id),
+        };
         let _ = writeln!(
             out,
             "{indent}subgraph {}[\"{}\"]",
-            mermaid_id(&format!("group:{}", child.id)),
+            mermaid_id(&id),
             mermaid_text(&child.label)
         );
-        mermaid_group(graph, Some(&child.id), depth + 1, out);
+        mermaid_group(graph, Some(&child.id), depth + 1, out, lane);
         let _ = writeln!(out, "{indent}end");
     }
 }
@@ -442,6 +536,15 @@ fn dot_node(node: &Node) -> String {
             format!("{bar}, label=\"\"")
         }
         NodeKind::Merge => format!("{}, label=\"\"", dot_shape(node.kind)),
+        // A granted release stands out by fill as well as by its label.
+        NodeKind::Transition | NodeKind::Action
+            if node.metadata.get("release").map(String::as_str) == Some("granted") =>
+        {
+            format!(
+                "shape=box, style=\"filled,bold\", fillcolor=\"#f3e5f5\", color=\"#6a1b9a\", label={}",
+                dot_string(&node.label.join("\n"))
+            )
+        }
         kind => format!(
             "{}, label={}",
             dot_shape(kind),
@@ -472,7 +575,25 @@ fn dot(graph: &Graph) -> String {
     for note in &graph.annotations {
         let _ = writeln!(out, "  // {}", comment(note));
     }
-    dot_group(graph, None, 1, &mut out);
+    if lanes_drawn(graph) {
+        for lane in &graph.lanes {
+            let (fill, border) = lane_colors(&lane.id);
+            let _ = writeln!(
+                out,
+                "  subgraph {} {{",
+                dot_string(&format!("cluster_lane_{}", lane.id))
+            );
+            let _ = writeln!(
+                out,
+                "    label={}; style=\"filled,rounded\"; fillcolor=\"{fill}\"; color=\"{border}\"; penwidth=2; fontsize=14;",
+                dot_string(&lane.label)
+            );
+            dot_group(graph, None, 2, &mut out, Some(&lane.id));
+            out.push_str("  }\n");
+        }
+    } else {
+        dot_group(graph, None, 1, &mut out, None);
+    }
     for drawn in drawn_edges(graph) {
         let edge = drawn.edge;
         let mut attributes = Vec::new();
@@ -493,6 +614,10 @@ fn dot(graph: &Graph) -> String {
         if edge.denied {
             attributes.push(
                 "style=dotted, color=\"#c62828\", fontcolor=\"#c62828\", arrowhead=tee".to_owned(),
+            );
+        } else if edge.kind == crate::EdgeKind::Declassification {
+            attributes.push(
+                "style=bold, penwidth=2.5, color=\"#6a1b9a\", fontcolor=\"#6a1b9a\"".to_owned(),
             );
         } else if edge.guarded {
             attributes.push("style=bold, penwidth=2".to_owned());
@@ -518,9 +643,18 @@ fn dot(graph: &Graph) -> String {
     out
 }
 
-fn dot_group(graph: &Graph, group: Option<&str>, depth: usize, out: &mut String) {
+fn dot_group(
+    graph: &Graph,
+    group: Option<&str>,
+    depth: usize,
+    out: &mut String,
+    lane: Option<&str>,
+) {
     let indent = "  ".repeat(depth);
-    for node in members(graph, group) {
+    for node in members(graph, group)
+        .into_iter()
+        .filter(|node| in_lane(node, lane))
+    {
         let _ = writeln!(
             out,
             "{indent}{} [{}, tooltip={}];",
@@ -530,17 +664,20 @@ fn dot_group(graph: &Graph, group: Option<&str>, depth: usize, out: &mut String)
         );
     }
     for child in child_groups(graph, group) {
-        let _ = writeln!(
-            out,
-            "{indent}subgraph {} {{",
-            dot_string(&format!("cluster_{}", child.id))
-        );
+        if !group_in_lane(graph, &child.id, lane) {
+            continue;
+        }
+        let cluster = match lane {
+            Some(lane) => format!("cluster_{lane}_{}", child.id),
+            None => format!("cluster_{}", child.id),
+        };
+        let _ = writeln!(out, "{indent}subgraph {} {{", dot_string(&cluster));
         let _ = writeln!(
             out,
             "{indent}  label={}; style=rounded;",
             dot_string(&child.label)
         );
-        dot_group(graph, Some(&child.id), depth + 1, out);
+        dot_group(graph, Some(&child.id), depth + 1, out, lane);
         let _ = writeln!(out, "{indent}}}");
     }
 }
@@ -576,6 +713,16 @@ fn plantuml(graph: &Graph) -> Result<String, RenderError> {
     for note in &graph.annotations {
         let _ = writeln!(out, "' {}", comment(note));
     }
+    if lanes_drawn(graph) {
+        for lane in &graph.lanes {
+            let _ = writeln!(
+                out,
+                "|{}|{}|",
+                lane_colors(&lane.id).0,
+                lane_label(&lane.label)
+            );
+        }
+    }
     let walker = Walker::new(graph);
     for group in graph.groups.iter().filter(|group| group.kind == "activity") {
         let _ = writeln!(out, "partition \"{}\" {{", plantuml_text(&group.label));
@@ -597,6 +744,10 @@ struct Walker<'g> {
     nodes: std::collections::BTreeMap<&'g str, &'g Node>,
     outgoing: std::collections::BTreeMap<&'g str, Vec<&'g Edge>>,
     limit: usize,
+    /// Lane label by lane id, when lanes are drawn.
+    lanes: std::collections::BTreeMap<&'g str, String>,
+    /// The lane the output is currently in.
+    current: std::cell::RefCell<Option<String>>,
 }
 
 impl<'g> Walker<'g> {
@@ -614,6 +765,16 @@ impl<'g> Walker<'g> {
                 .collect(),
             outgoing,
             limit: graph.nodes.len() + graph.edges.len(),
+            lanes: if lanes_drawn(graph) {
+                graph
+                    .lanes
+                    .iter()
+                    .map(|lane| (lane.id.as_str(), lane_label(&lane.label)))
+                    .collect()
+            } else {
+                std::collections::BTreeMap::new()
+            },
+            current: std::cell::RefCell::new(None),
         }
     }
 
@@ -660,6 +821,14 @@ impl<'g> Walker<'g> {
                 .map(|line| plantuml_text(line))
                 .collect::<Vec<_>>()
                 .join("\\n");
+            // Switch the swimlane before a node that lives in another lane.
+            if let Some(label) = node.lane.as_deref().and_then(|lane| self.lanes.get(lane)) {
+                let mut current = self.current.borrow_mut();
+                if current.as_deref() != Some(label.as_str()) {
+                    let _ = writeln!(out, "|{label}|");
+                    *current = Some(label.clone());
+                }
+            }
             let mut resume = id.clone();
             match node.kind {
                 NodeKind::Initial => {
@@ -696,6 +865,9 @@ impl<'g> Walker<'g> {
                     };
                     if node.metadata.get("style").map(String::as_str) == Some("switch") {
                         let _ = writeln!(out, "{indent}switch ({text})");
+                        // Empty cases last: PlantUML overlaps a leading empty case's label.
+                        let mut arms = arms.clone();
+                        arms.sort_by_key(|arm| arm.to == merge);
                         for arm in &arms {
                             let _ = writeln!(out, "{indent}case ({})", condition(arm));
                             if arm.to != merge {
@@ -886,14 +1058,14 @@ mod tests {
             &crate::Options::default(),
         )
         .unwrap();
-        // Five restricted values each keep their own denied edge in the IR ...
+        // Seven restricted values each keep their own denied edge in the IR ...
         let restricted = graph
             .edges
             .iter()
             .filter(|edge| edge.denied && edge.to == "policy:never.cloud")
             .filter(|edge| edge.classification.as_deref() == Some("restricted"))
             .count();
-        assert_eq!(restricted, 5);
+        assert_eq!(restricted, 7);
         // ... but each class group is drawn as one edge in both renderers.
         let mermaid = render(&graph, Format::Mermaid).unwrap();
         assert_eq!(
@@ -950,7 +1122,7 @@ mod tests {
 
         let net = render(&petri, Format::Pnml).unwrap();
         assert!(net.contains("type=\"http://www.pnml.org/version-2009/grammar/ptnet\""));
-        assert_eq!(net.matches("<initialMarking>").count(), 1);
+        assert_eq!(net.matches("<initialMarking>").count(), 2);
         let places = petri
             .nodes
             .iter()
@@ -960,6 +1132,34 @@ mod tests {
         assert_eq!(
             net.matches("<transition ").count(),
             petri.nodes.len() - places
+        );
+    }
+
+    #[test]
+    fn lanes_are_drawn_only_when_there_is_a_boundary() {
+        let mut activity = secure(crate::View::Activity);
+        let uml = render(&activity, Format::Plantuml).unwrap();
+        assert!(uml.contains("|#edf7ed|local (protected)|\n|#e8f0fb|cloud (external)|\n"));
+        // The cloud call switches lanes and the flow switches back.
+        let cloud = uml.find("\n|cloud (external)|\n").expect("switch to cloud");
+        assert!(uml[cloud..].contains(":review &#60;= cloud_reviewer.review&#40;note&#41;;"));
+        assert!(uml[cloud..].contains("\n|local (protected)|\n"));
+        let dot = render(&activity, Format::Dot).unwrap();
+        assert!(dot.contains("cluster_lane_local") && dot.contains("cluster_lane_cloud"));
+        assert!(dot.contains("\"cluster_cloud_activity:p4\""));
+        let mermaid = render(&activity, Format::Mermaid).unwrap();
+        assert!(mermaid.contains("subgraph n_lane_Ccloud[\"cloud #40;external#41;\"]"));
+        // --no-lanes clears them before rendering.
+        activity.lanes.clear();
+        assert!(
+            !render(&activity, Format::Dot)
+                .unwrap()
+                .contains("cluster_lane_")
+        );
+        assert!(
+            !render(&activity, Format::Plantuml)
+                .unwrap()
+                .contains("|local")
         );
     }
 

@@ -47,6 +47,8 @@ PROFILE_v0.1 にない構成要素、または `v0.2` とされた構成要素�
 device name : agent | mcp | deterministic generic (key => value, ...);
     -- keys used by v0.1: route => "<configured action>", location => local | cloud,
     -- clearance => public | internal | restricted
+device name : declassifier generic (from => <class>, to => <class>,
+    [filter => <deterministic device>, filter_method => <method>,] [approval => human]);
 signal a, b : type<class> := <constant>;
 timer name : period <n> ms|sec|min|hour|day;
 budget name is iterations <= n; wall_time <= <time>; tool_calls <= n; model_calls <= n; end budget;
@@ -61,6 +63,7 @@ process(name, name.changed, device.done, device.failed, device.timeout, timer, b
 begin
     device.method(<expr>, ...) [timeout <time>] -> signal;
     signal <= <expr>;
+    signal <= declassify <expr> using <declassifier>;
     if <expr> then ... elsif <expr> then ... else ... end if;
     parallel device.method(...) -> signal; ... end parallel;
     assert <expr>;
@@ -81,7 +84,36 @@ end process;
 
 静的意味論（checker の診断）: `E2xx` は構造（未知または重複した名前、`in` ポートへの書き込み、
 不正な budget の項目や正でない時間、信号でない barrier のメンバー、1つの信号に書き込む2つの parallel
-分岐）。`E3xx` は情報フロー（SECURITY_SPEC を参照）。`E4xx` は言語が定義するが PROFILE_v0.1 が除外する
-構成要素（`confidential`、`secret`、`sandbox`、`private_cloud`、`external`、`declassifier`）または未知の名前。
+分岐）。`E3xx` は情報フロー（明示のフロー `E301`〜`E303`、暗黙のフロー `E304`〜`E306`。SECURITY_SPEC を参照）。`E4xx` は言語が定義するが PROFILE_v0.1 が除外する
+構成要素（`confidential`、`secret`、`sandbox`、`private_cloud`、`external`）または未知の名前。
+### 機密解除（実装済み、2026-09-25）
+
+区分を下げられるのは、`declassifier` の device を使う `declassify` 文だけである。declassifier は解除できる範囲
+（`from` から `to` へ）と、解除を認める手段を宣言する。手段は次から選び、少なくとも1つを書く。両方を書くと両方が
+必要になる。
+
+- `filter => <device>`、`filter_method => <method>`: 決定的な検査。`deterministic` 種別で `local` の device を
+  指定する。
+- `approval => human`: 人の承認。runtime に設定された承認者（HumanPort の承認者モード）が、解除する内容を見て判断する。
+
+```vhdl
+device pii_check : deterministic generic (location => local, route => "pii_filter");
+device release : declassifier generic (from => restricted, to => internal,
+    filter => pii_check, filter_method => scan, approval => human);
+...
+summary <= declassify draft using release;
+```
+
+静的規則（checker）:
+
+- `E219`: declassifier の宣言が不正。`from` と `to` がない、`to` が `from` より弱くない、手段がない、`filter` が
+  `local` の `deterministic` device でない、`filter` があるのに `filter_method` がない、`approval` が `human` でない、
+  declassifier の `location` が `local` でない。
+- `E220`: `using` の device が declassifier でない。また、declassifier を通常の device のように呼び出した。
+- `E307`: 解除する式の区分が declassifier の `from` より強い。
+- 解除の結果の区分は `to` である。`to` より弱い信号に格納すると `E303`、文脈の区分が格納先より強いと `E304` とする。
+- 解除の成否は解除する内容に依存するため、declassifier の `done`・`failed` のイベントの区分は、解除する式の区分と
+  文脈の区分のうち最も強いものとする（SECURITY_SPEC の暗黙のフロー）。
+
 `case`、`await`、`type` / FSM 宣言、`retry`、`approve`、`policy`、`export`、`configuration`、時相アサーションは
 v0.1 に含まれず、構文として受け付けない。

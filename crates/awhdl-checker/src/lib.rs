@@ -2,7 +2,8 @@
 //! are `AWHDL-E3xx`, and constructs outside the v0.1 profile are `AWHDL-E4xx`.
 use awhdl_ast::{
     ArchitectureDecl, Assertion, BudgetValue, ConcurrentStatement, DataType, Declaration, Design,
-    DesignUnit, DeviceCall, DeviceDecl, Expr, Expression, PortMode, SequentialStatement, Span,
+    DesignUnit, DeviceCall, DeviceDecl, Expr, Expression, PortMode, ProcessStmt,
+    SequentialStatement, Span,
 };
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
@@ -33,7 +34,6 @@ pub enum Location {
 /// Classes and locations that the language defines but v0.1 does not implement.
 const DEFERRED_CLASSES: [&str; 2] = ["confidential", "secret"];
 const DEFERRED_LOCATIONS: [&str; 3] = ["sandbox", "private_cloud", "external"];
-const DEFERRED_DEVICE_KINDS: [&str; 1] = ["declassifier"];
 const COUNT_LIMITS: [&str; 5] = [
     "iterations",
     "tool_calls",
@@ -135,6 +135,7 @@ pub fn check(design: &Design) -> Vec<Diagnostic> {
             }
         }
         scope.declare(architecture, &mut diagnostics);
+        scope.check_declassifiers(&mut diagnostics);
         scope.check_statements(architecture, &mut diagnostics);
     }
     diagnostics
@@ -183,6 +184,35 @@ fn profile_name(
     });
 }
 
+/// The class a statement's execution reveals, and where it comes from.
+#[derive(Clone)]
+struct Context {
+    class: Class,
+    reason: String,
+}
+
+impl Context {
+    fn public() -> Self {
+        Context {
+            class: Class::Public,
+            reason: "public".to_owned(),
+        }
+    }
+
+    fn raise(&mut self, class: Class, reason: impl FnOnce() -> String) {
+        if class > self.class {
+            self.class = class;
+            self.reason = reason();
+        }
+    }
+}
+
+enum Site<'s> {
+    Call(&'s DeviceCall, Context),
+    Declassify(&'s awhdl_ast::Declassify, Context),
+    Assign(&'s awhdl_ast::Assignment, Context),
+}
+
 struct Value {
     class: Class,
     input_port: bool,
@@ -194,6 +224,8 @@ struct Scope<'a> {
     devices: BTreeMap<String, &'a DeviceDecl>,
     timers: BTreeSet<String>,
     barriers: BTreeSet<String>,
+    /// Barrier name -> member signals.
+    barrier_members: BTreeMap<String, Vec<String>>,
     budgets: BTreeSet<String>,
     /// Minimum class that may never reach a cloud device. `restricted` always.
     cloud_floor: Option<Class>,
@@ -307,6 +339,8 @@ impl<'a> Scope<'a> {
                         }
                     }
                     self.barriers.insert(barrier.name.clone());
+                    self.barrier_members
+                        .insert(barrier.name.clone(), barrier.members.clone());
                 }
             }
         }
@@ -373,6 +407,281 @@ impl<'a> Scope<'a> {
                 self.check_sequential(sequential, diagnostics);
             }
         }
+        self.check_implicit_flows(architecture, diagnostics);
+    }
+
+    // -----------------------------------------------------------------------
+    // Implicit flows (SECURITY_SPEC): whether and when a statement runs
+    // carries the class of what triggered it and of the conditions around it.
+
+    fn check_implicit_flows(
+        &self,
+        architecture: &ArchitectureDecl,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) {
+        let processes = architecture
+            .statements
+            .iter()
+            .filter_map(|statement| match statement {
+                ConcurrentStatement::Process(process) => Some(process),
+                ConcurrentStatement::Assert(_) => None,
+            })
+            .collect::<Vec<_>>();
+        // Device event classes depend on call contexts and vice versa: iterate
+        // from public until nothing rises (a finite lattice, so this ends).
+        let mut events: BTreeMap<&str, Class> = BTreeMap::new();
+        let sites = loop {
+            let mut sites = Vec::new();
+            for process in &processes {
+                let context = self.process_context(process, &events);
+                self.sites(&process.statements, &context, &mut sites);
+                let timed = self.timeout_context(&process.statements, &context);
+                self.sites(&process.on_timeout, &timed, &mut sites);
+            }
+            let mut next: BTreeMap<&str, Class> = BTreeMap::new();
+            for site in &sites {
+                // A call's or a release's outcome depends on what it was given.
+                let (device, class) = match site {
+                    Site::Call(call, context) => (
+                        call.device.as_str(),
+                        self.call_class(call).max(context.class),
+                    ),
+                    Site::Declassify(release, context) => (
+                        release.declassifier.as_str(),
+                        self.class_of_expr(&release.value.expr).max(context.class),
+                    ),
+                    Site::Assign(..) => continue,
+                };
+                let entry = next.entry(device).or_insert(Class::Public);
+                *entry = (*entry).max(class);
+            }
+            if next == events {
+                break sites;
+            }
+            events = next;
+        };
+        for site in sites {
+            match site {
+                Site::Declassify(release, context) => {
+                    let (Some(target), Some((from, to))) = (
+                        self.values.get(&release.target),
+                        self.declassifier_range(&release.declassifier),
+                    ) else {
+                        continue;
+                    };
+                    // A human who approves sees the release in its context, so the
+                    // context may reach `from`; a filter sees only the content.
+                    let approved = self
+                        .devices
+                        .get(&release.declassifier)
+                        .and_then(|device| device.generic("approval"))
+                        .is_some();
+                    let allowed = if approved { from } else { target.class };
+                    if to <= target.class && context.class > allowed {
+                        diagnostics.push(diag(
+                            "AWHDL-E304",
+                            format!(
+                                "implicit flow: {:?} context ({}) cannot write {:?} signal {}{}",
+                                context.class,
+                                context.reason,
+                                target.class,
+                                release.target,
+                                if approved {
+                                    ""
+                                } else {
+                                    "; a filter-only declassifier checks the content, not the context"
+                                }
+                            ),
+                            release.span,
+                        ));
+                    }
+                }
+                Site::Assign(assignment, context) => {
+                    let Some(target) = self.values.get(&assignment.target) else {
+                        continue;
+                    };
+                    let explicit = self.class_of_expr(&assignment.value.expr);
+                    if explicit <= target.class && context.class > target.class {
+                        diagnostics.push(diag(
+                            "AWHDL-E304",
+                            format!(
+                                "implicit flow: {:?} context ({}) cannot write {:?} signal {}",
+                                context.class, context.reason, target.class, assignment.target
+                            ),
+                            assignment.span,
+                        ));
+                    }
+                }
+                Site::Call(call, context) => {
+                    let explicit = self.call_class(call);
+                    if let Some(output) = self.values.get(&call.output)
+                        && explicit <= output.class
+                        && context.class > output.class
+                    {
+                        diagnostics.push(diag(
+                            "AWHDL-E304",
+                            format!(
+                                "implicit flow: {:?} context ({}) cannot write {:?} signal {} from {}.{}",
+                                context.class,
+                                context.reason,
+                                output.class,
+                                call.output,
+                                call.device,
+                                call.method
+                            ),
+                            call.span,
+                        ));
+                    }
+                    let Some(device) = self.devices.get(&call.device) else {
+                        continue;
+                    };
+                    if location_of(device) == Location::Cloud
+                        && let Some(floor) = self.cloud_floor
+                        && explicit < floor
+                        && context.class >= floor
+                    {
+                        diagnostics.push(diag(
+                            "AWHDL-E305",
+                            format!(
+                                "implicit flow: calling cloud device {} in a {:?} context ({}) reveals it",
+                                call.device, context.class, context.reason
+                            ),
+                            call.span,
+                        ));
+                    }
+                    if let Some(clearance) = device
+                        .generic("clearance")
+                        .and_then(|value| value.as_ident())
+                        .and_then(parse_class)
+                        && explicit <= clearance
+                        && context.class > clearance
+                    {
+                        diagnostics.push(diag(
+                            "AWHDL-E306",
+                            format!(
+                                "implicit flow: {:?} context ({}) exceeds {:?} clearance of device {}",
+                                context.class, context.reason, clearance, call.device
+                            ),
+                            call.span,
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    /// The explicit class of a call: the strongest class its arguments read.
+    fn call_class(&self, call: &DeviceCall) -> Class {
+        call.arguments
+            .iter()
+            .map(|argument| self.class_of_expr(&argument.expr))
+            .max()
+            .unwrap_or(Class::Public)
+    }
+
+    /// The class of a sensitivity event (SECURITY_SPEC, event classes).
+    fn event_class(&self, trigger: &str, devices: &BTreeMap<&str, Class>) -> Class {
+        let (root, member) = match trigger.split_once('.') {
+            Some((root, member)) => (root, Some(member)),
+            None => (trigger, None),
+        };
+        if let Some(value) = self.values.get(root) {
+            return value.class;
+        }
+        if self.barriers.contains(root) {
+            return self
+                .barrier_members
+                .get(root)
+                .into_iter()
+                .flatten()
+                .filter_map(|member| self.values.get(member).map(|value| value.class))
+                .max()
+                .unwrap_or(Class::Public);
+        }
+        if member.is_some() && self.devices.contains_key(root) {
+            return devices.get(root).copied().unwrap_or(Class::Public);
+        }
+        Class::Public
+    }
+
+    fn process_context(&self, process: &ProcessStmt, devices: &BTreeMap<&str, Class>) -> Context {
+        let mut context = Context::public();
+        for trigger in &process.sensitivity {
+            context.raise(self.event_class(trigger, devices), || {
+                format!("triggered by {trigger}")
+            });
+        }
+        context
+    }
+
+    /// `on timeout` runs depending on how long the body's calls take.
+    fn timeout_context(&self, body: &[SequentialStatement], outer: &Context) -> Context {
+        let mut sites = Vec::new();
+        self.sites(body, outer, &mut sites);
+        let mut context = outer.clone();
+        for site in sites {
+            match site {
+                Site::Call(call, call_context) => {
+                    context.raise(self.call_class(call).max(call_context.class), || {
+                        format!(
+                            "on timeout of a body calling {}.{}",
+                            call.device, call.method
+                        )
+                    });
+                }
+                Site::Declassify(release, call_context) => {
+                    let class = self
+                        .class_of_expr(&release.value.expr)
+                        .max(call_context.class);
+                    context.raise(class, || {
+                        format!("on timeout of a body using {}", release.declassifier)
+                    });
+                }
+                Site::Assign(..) => {}
+            }
+        }
+        context
+    }
+
+    /// Every call and assignment with the context it runs in.
+    fn sites<'s>(
+        &self,
+        statements: &'s [SequentialStatement],
+        context: &Context,
+        sites: &mut Vec<Site<'s>>,
+    ) {
+        for statement in statements {
+            match statement {
+                SequentialStatement::DeviceCall(call) => {
+                    sites.push(Site::Call(call, context.clone()))
+                }
+                SequentialStatement::Assignment(assignment) => {
+                    sites.push(Site::Assign(assignment, context.clone()));
+                }
+                SequentialStatement::Parallel(parallel) => {
+                    for call in &parallel.calls {
+                        sites.push(Site::Call(call, context.clone()));
+                    }
+                }
+                SequentialStatement::If(branching) => {
+                    // Reaching any branch, `else` included, reveals every condition.
+                    let mut inner = context.clone();
+                    for branch in &branching.branches {
+                        inner.raise(self.class_of_expr(&branch.condition.expr), || {
+                            format!("condition `{}`", branch.condition.source)
+                        });
+                    }
+                    for branch in &branching.branches {
+                        self.sites(&branch.statements, &inner, sites);
+                    }
+                    self.sites(&branching.otherwise, &inner, sites);
+                }
+                SequentialStatement::Declassify(release) => {
+                    sites.push(Site::Declassify(release, context.clone()));
+                }
+                SequentialStatement::Assert { .. } | SequentialStatement::Null { .. } => {}
+            }
+        }
     }
 
     /// A sensitivity name must be an event the runtime raises: `signal` /
@@ -411,6 +720,140 @@ impl<'a> Scope<'a> {
         ))
     }
 
+    /// The `(from, to)` range of a valid declassifier.
+    fn declassifier_range(&self, name: &str) -> Option<(Class, Class)> {
+        let device = self.devices.get(name)?;
+        if device.device_type != "declassifier" {
+            return None;
+        }
+        let class = |key: &str| {
+            device
+                .generic(key)
+                .and_then(|value| value.as_ident())
+                .and_then(parse_class)
+        };
+        Some((class("from")?, class("to")?))
+    }
+
+    /// E219: a declassifier must name a range that lowers and at least one
+    /// trusted means (a local deterministic filter, human approval, or both).
+    fn check_declassifiers(&self, diagnostics: &mut Vec<Diagnostic>) {
+        for device in self.devices.values() {
+            if device.device_type != "declassifier" {
+                continue;
+            }
+            let mut problems = Vec::new();
+            let ident = |key: &str| device.generic(key).and_then(|value| value.as_ident());
+            let class = |key: &str| ident(key).and_then(parse_class);
+            match (class("from"), class("to")) {
+                (Some(from), Some(to)) if to >= from => {
+                    problems.push(format!("to {to:?} is not weaker than from {from:?}"));
+                }
+                (Some(_), Some(_)) => {}
+                _ => problems.push("needs from => <class> and to => <class>".to_owned()),
+            }
+            let filter = device.generic("filter");
+            let approval = device.generic("approval");
+            if filter.is_none() && approval.is_none() {
+                problems.push("needs filter => <device>, approval => human, or both".to_owned());
+            }
+            if let Some(filter) = filter {
+                match filter.as_ident().and_then(|name| self.devices.get(name)) {
+                    Some(checker)
+                        if checker.device_type == "deterministic"
+                            && location_of(checker) == Location::Local => {}
+                    _ => problems.push("filter must name a local deterministic device".to_owned()),
+                }
+                if ident("filter_method").is_none() {
+                    problems.push("filter needs filter_method => <method>".to_owned());
+                }
+            }
+            if approval.is_some_and(|value| value.as_ident() != Some("human")) {
+                problems.push("approval must be human".to_owned());
+            }
+            if location_of(device) != Location::Local {
+                problems.push("a declassifier must be local".to_owned());
+            }
+            for problem in problems {
+                diagnostics.push(diag(
+                    "AWHDL-E219",
+                    format!("declassifier {}: {problem}", device.name),
+                    device.span,
+                ));
+            }
+        }
+    }
+
+    fn check_declassify(&self, release: &awhdl_ast::Declassify, diagnostics: &mut Vec<Diagnostic>) {
+        self.check_expression(&release.value, diagnostics);
+        let target = match self.values.get(&release.target) {
+            None => {
+                diagnostics.push(diag(
+                    "AWHDL-E209",
+                    format!(
+                        "declassify writes unknown signal or port: {}",
+                        release.target
+                    ),
+                    release.span,
+                ));
+                None
+            }
+            Some(target) => {
+                if target.input_port {
+                    diagnostics.push(diag(
+                        "AWHDL-E217",
+                        format!("cannot write input port {}", release.target),
+                        release.span,
+                    ));
+                }
+                Some(target)
+            }
+        };
+        let Some(device) = self.devices.get(&release.declassifier) else {
+            diagnostics.push(diag(
+                "AWHDL-E207",
+                format!("declassify uses unknown device: {}", release.declassifier),
+                release.span,
+            ));
+            return;
+        };
+        if device.device_type != "declassifier" {
+            diagnostics.push(diag(
+                "AWHDL-E220",
+                format!("{} is not a declassifier", release.declassifier),
+                release.span,
+            ));
+            return;
+        }
+        // An invalid declassifier is reported once, as E219.
+        let Some((from, to)) = self.declassifier_range(&release.declassifier) else {
+            return;
+        };
+        let source = self.class_of_expr(&release.value.expr);
+        if source > from {
+            diagnostics.push(diag(
+                "AWHDL-E307",
+                format!(
+                    "{source:?} data exceeds the {from:?} range of declassifier {}",
+                    release.declassifier
+                ),
+                release.span,
+            ));
+        }
+        if let Some(target) = target
+            && to > target.class
+        {
+            diagnostics.push(diag(
+                "AWHDL-E303",
+                format!(
+                    "declassify to {to:?} cannot be stored in {:?} signal {}",
+                    target.class, release.target
+                ),
+                release.span,
+            ));
+        }
+    }
+
     fn check_sequential(&self, statement: &SequentialStatement, diagnostics: &mut Vec<Diagnostic>) {
         match statement {
             SequentialStatement::DeviceCall(call) => self.check_call(call, diagnostics),
@@ -438,7 +881,7 @@ impl<'a> Scope<'a> {
                             diagnostics.push(diag(
                                 "AWHDL-E303",
                                 format!(
-                                    "assignment lowers {source:?} data into {:?} signal {}; declassification is not in the v0.1 profile",
+                                    "assignment lowers {source:?} data into {:?} signal {}; only declassify ... using <declassifier> may lower a class",
                                     target.class, assignment.target
                                 ),
                                 assignment.span,
@@ -474,11 +917,26 @@ impl<'a> Scope<'a> {
             SequentialStatement::Assert { condition, .. } => {
                 self.check_expression(condition, diagnostics);
             }
+            SequentialStatement::Declassify(release) => self.check_declassify(release, diagnostics),
             SequentialStatement::Null { .. } => {}
         }
     }
 
     fn check_call(&self, call: &DeviceCall, diagnostics: &mut Vec<Diagnostic>) {
+        if self
+            .devices
+            .get(&call.device)
+            .is_some_and(|device| device.device_type == "declassifier")
+        {
+            diagnostics.push(diag(
+                "AWHDL-E220",
+                format!(
+                    "declassifier {} cannot be called; use declassify ... using {}",
+                    call.device, call.device
+                ),
+                call.span,
+            ));
+        }
         for argument in &call.arguments {
             self.check_expression(argument, diagnostics);
         }
@@ -589,16 +1047,6 @@ impl<'a> Scope<'a> {
 }
 
 fn check_device(device: &DeviceDecl, diagnostics: &mut Vec<Diagnostic>) {
-    if DEFERRED_DEVICE_KINDS.contains(&device.device_type.as_str()) {
-        diagnostics.push(diag(
-            "AWHDL-E401",
-            format!(
-                "device kind {} is not in the v0.1 profile",
-                device.device_type
-            ),
-            device.span,
-        ));
-    }
     let mut keys = BTreeSet::new();
     for generic in &device.generics {
         if !keys.insert(&generic.key) {
@@ -684,6 +1132,7 @@ entity flow is
     port (
         patient : in  table<restricted>;
         notes   : in  text<internal>;
+        ping    : in  text<public>;
         report  : out text<internal>
     );
 end flow;
@@ -694,7 +1143,7 @@ architecture secure of flow is
     signal private_summary : text<restricted>;
     signal count : number<public> := 0;
 begin
-    process(patient, notes)
+    process(ping)
     begin
         BODY
     end process;
@@ -703,6 +1152,14 @@ end secure;
 
     fn flow(body: &str) -> Vec<&'static str> {
         codes(&FLOW.replace("BODY", body))
+    }
+
+    fn triggered(trigger: &str, body: &str) -> Vec<&'static str> {
+        codes(
+            &FLOW
+                .replace("process(ping)", &format!("process({trigger})"))
+                .replace("BODY", body),
+        )
     }
 
     #[test]
@@ -724,6 +1181,155 @@ end secure;
             flow("if count > 1 then parallel reviewer.review(private_summary) -> report; end parallel; end if;")
                 .contains(&"AWHDL-E301")
         );
+    }
+
+    #[test]
+    fn implicit_flows_through_triggers_conditions_and_outcomes_are_rejected() {
+        // A restricted trigger makes everything the process does restricted.
+        assert_eq!(triggered("patient", "report <= \"seen\";"), ["AWHDL-E304"]);
+        let reveal = triggered("patient", "reviewer.review(count) -> summary;");
+        assert!(reveal.contains(&"AWHDL-E305") && reveal.contains(&"AWHDL-E306"));
+        // A condition taints its branches, `else` included.
+        assert_eq!(
+            flow("if private_summary = \"x\" then report <= \"yes\"; end if;"),
+            ["AWHDL-E304"]
+        );
+        assert_eq!(
+            flow("if private_summary = \"x\" then null; else report <= \"no\"; end if;"),
+            ["AWHDL-E304"]
+        );
+        assert!(
+            flow("if private_summary = \"x\" then reviewer.review(count) -> summary; end if;")
+                .contains(&"AWHDL-E305")
+        );
+        // A device's outcome events carry the class of what it was given.
+        let events = FLOW
+            .replace("BODY", "local_llm.run(patient) -> private_summary;")
+            .replace(
+                "end secure;",
+                "process(local_llm.done)\nbegin\n    report <= \"done\";\nend process;\nend secure;",
+            );
+        assert_eq!(codes(&events), ["AWHDL-E304"]);
+        // `on timeout` reveals how long the body's calls took.
+        let timed = FLOW
+            .replace("process(ping)", "process(ping) timeout 1 min;")
+            .replace(
+                "BODY",
+                "local_llm.run(patient) -> private_summary;\n    on timeout\n        report <= \"late\";",
+            );
+        assert_eq!(codes(&timed), ["AWHDL-E304"]);
+        // An explicit violation is reported once, not again as an implicit one.
+        assert_eq!(triggered("patient", "summary <= patient;"), ["AWHDL-E303"]);
+        // Public triggers and public conditions stay allowed.
+        assert!(flow("if count > 1 then reviewer.review(notes) -> report; end if;").is_empty());
+        assert!(triggered("notes", "reviewer.review(notes) -> report;").is_empty());
+    }
+
+    const RELEASE: &str =
+        "device pii_check : deterministic generic (location => local, route => \"pii\");
+    device release : declassifier generic (from => restricted, to => internal,
+        filter => pii_check, filter_method => scan, approval => human);
+    device reviewer";
+
+    fn released(body: &str) -> Vec<&'static str> {
+        codes(
+            &FLOW
+                .replacen("device reviewer", RELEASE, 1)
+                .replace("BODY", body),
+        )
+    }
+
+    #[test]
+    fn only_a_declassifier_lowers_a_class() {
+        // Released data may go where its new class may go.
+        assert!(released("summary <= declassify private_summary using release;").is_empty());
+        assert!(
+            released(
+                "summary <= declassify private_summary using release;\n        reviewer.review(summary) -> report;"
+            )
+            .is_empty()
+        );
+        // Without a release the same store is laundering (E303).
+        assert_eq!(released("summary <= private_summary;"), ["AWHDL-E303"]);
+        // A declassifier is not a device to call, and only declassifiers release.
+        assert!(released("release.run(private_summary) -> summary;").contains(&"AWHDL-E220"));
+        assert_eq!(
+            released("summary <= declassify private_summary using local_llm;"),
+            ["AWHDL-E220"]
+        );
+        // The release keeps its `to` class and the context stays checked.
+        assert_eq!(
+            released("count <= declassify private_summary using release;"),
+            ["AWHDL-E303"]
+        );
+        // A human approver sees the release in its context, up to `from`;
+        // a filter-only declassifier sees only the content.
+        let in_context = |release: &str| {
+            codes(
+                &FLOW
+                    .replacen("device reviewer", release, 1)
+                    .replace("process(ping)", "process(patient)")
+                    .replace(
+                        "BODY",
+                        "summary <= declassify private_summary using release;",
+                    ),
+            )
+        };
+        assert!(in_context(RELEASE).is_empty());
+        let filter_only = RELEASE.replace(", approval => human", "");
+        assert_eq!(in_context(&filter_only), ["AWHDL-E304"]);
+        // The release's outcome events carry the released class.
+        let events = FLOW
+            .replacen("device reviewer", RELEASE, 1)
+            .replace("BODY", "summary <= declassify private_summary using release;")
+            .replace(
+                "end secure;",
+                "process(release.failed)\nbegin\n    report <= \"refused\";\nend process;\nend secure;",
+            );
+        assert_eq!(codes(&events), ["AWHDL-E304"]);
+    }
+
+    #[test]
+    fn declassifiers_must_lower_through_trusted_means() {
+        let with = |generics: &str| {
+            codes(
+                &FLOW
+                    .replacen(
+                        "device reviewer",
+                        &format!(
+                            "device pii_check : deterministic generic (location => local, route => \"pii\");\n    device release : declassifier generic ({generics});\n    device reviewer"
+                        ),
+                        1,
+                    )
+                    .replace("BODY", "null;"),
+            )
+        };
+        // Each means alone, and both together, are valid.
+        assert!(with("from => restricted, to => internal, approval => human").is_empty());
+        assert!(
+            with("from => restricted, to => public, filter => pii_check, filter_method => scan")
+                .is_empty()
+        );
+        for invalid in [
+            "from => restricted, to => internal",
+            "from => internal, to => restricted, approval => human",
+            "to => internal, approval => human",
+            "from => restricted, to => internal, approval => operator",
+            "from => restricted, to => internal, filter => pii_check",
+            "from => restricted, to => internal, filter => local_llm, filter_method => scan",
+            "from => restricted, to => internal, approval => human, location => cloud",
+        ] {
+            assert!(with(invalid).contains(&"AWHDL-E219"), "{invalid}");
+        }
+        // Data above the declassifier's range cannot be released.
+        let narrow = FLOW
+            .replacen(
+                "device reviewer",
+                "device release : declassifier generic (from => internal, to => public, approval => human);\n    device reviewer",
+                1,
+            )
+            .replace("BODY", "count <= declassify private_summary using release;");
+        assert!(codes(&narrow).contains(&"AWHDL-E307"));
     }
 
     #[test]
@@ -760,7 +1366,7 @@ end secure;
             "device reviewer : agent",
             "device anonymizer : declassifier;\n    device reviewer : agent",
         );
-        assert!(codes(&declassifier.replace("BODY", "null;")).contains(&"AWHDL-E401"));
+        assert!(codes(&declassifier.replace("BODY", "null;")).contains(&"AWHDL-E219"));
     }
 
     #[test]
@@ -771,7 +1377,7 @@ end secure;
                     "signal count",
                     "timer tick : period 1 sec;\n    barrier both (summary, private_summary);\n    signal count",
                 )
-                .replace("process(patient, notes)", &format!("process({names})"));
+                .replace("process(ping)", &format!("process({names})"));
             codes(&source.replace("BODY", "null;"))
         };
         for fires in [
@@ -815,7 +1421,7 @@ end secure;
                 "signal count",
                 "timer tick : period 0 sec;\n    budget b is iterations <= 0; wall_time <= 5; end budget;\n    barrier ready_all (summary, nothing);\n    signal count",
             )
-            .replace("process(patient, notes)", "process(tick, ready_all.ready, ready_all.bogus)");
+            .replace("process(ping)", "process(tick, ready_all.ready, ready_all.bogus)");
         let found = codes(&declarations.replace("BODY", "null;"));
         for code in ["AWHDL-E211", "AWHDL-E212", "AWHDL-E214", "AWHDL-E206"] {
             assert!(found.contains(&code), "{code} in {found:?}");

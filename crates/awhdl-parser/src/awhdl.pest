@@ -39,7 +39,7 @@ process_stmt = {
 process_timeout = { kw_timeout ~ time_literal ~ semi }
 on_timeout = { kw_on ~ kw_timeout ~ sequential_statement* }
 
-sequential_statement = { if_stmt | parallel_stmt | assert_stmt | null_stmt | device_call | assignment }
+sequential_statement = { if_stmt | parallel_stmt | assert_stmt | null_stmt | device_call | declassify_stmt | assignment }
 if_stmt = {
     kw_if ~ expression ~ kw_then ~ sequential_statement* ~ elsif_clause* ~ else_clause? ~
     kw_end ~ kw_if ~ semi
@@ -53,6 +53,7 @@ device_call = {
 }
 call_timeout = { kw_timeout ~ time_literal }
 assignment = { ident ~ assign_signal ~ expression ~ semi }
+declassify_stmt = { ident ~ assign_signal ~ kw_declassify ~ expression ~ kw_using ~ ident ~ semi }
 null_stmt = { kw_null ~ semi }
 
 selected_name = { ident ~ dot ~ ident }
@@ -85,10 +86,10 @@ time_unit = @{ ("ms" | "sec" | "min" | "hour" | "day") ~ !ident_char }
 ident_char = _{ ASCII_ALPHANUMERIC | "_" }
 keyword = @{
     ("architecture" | "assert" | "always" | "and" | "barrier" | "begin" | "budget" |
-     "device" | "else" | "elsif" | "end" | "entity" | "false" | "generic" | "if" |
+     "declassify" | "device" | "else" | "elsif" | "end" | "entity" | "false" | "generic" | "if" |
      "inout" | "in" | "is" | "never" | "not" | "null" | "of" | "on" | "or" | "out" |
      "parallel" | "period" | "port" | "process" | "signal" | "then" | "timeout" |
-     "timer" | "true") ~ !ident_char
+     "timer" | "true" | "using") ~ !ident_char
 }
 ident = @{ !keyword ~ (ASCII_ALPHA | "_") ~ ident_char* }
 integer = @{ "-"? ~ ASCII_DIGIT+ }
@@ -128,6 +129,8 @@ kw_inout = @{ "inout" ~ !ident_char }
 kw_in = @{ "in" ~ !ident_char }
 kw_out = @{ "out" ~ !ident_char }
 kw_null = @{ "null" ~ !ident_char }
+kw_declassify = @{ "declassify" ~ !ident_char }
+kw_using = @{ "using" ~ !ident_char }
 
 lparen = _{ "(" }
 rparen = _{ ")" }

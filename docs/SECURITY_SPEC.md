@@ -34,14 +34,16 @@ The target semantics are specified in the AI Conductor system specification,
 
 For v0.1, PROFILE_v0.1 requires the classifications `public`, `internal` and
 `restricted`, the locations `local` and `cloud`, and a static rule that
-`restricted` data never flows to a `cloud` location. Declassifiers, taint
-through control flow, and cloud DLP / egress inspection are v0.2.
+`restricted` data never flows to a `cloud` location. Cloud DLP / egress
+inspection is v0.2. Declassification by a declassifier is implemented as
+below (2026-09-25). Taint through control flow (implicit flows)
+is implemented as the static check below (2026-09-25).
 
 ### v0.1 flow rules (implemented)
 
 - A value's class is its declared label; an unlabeled type is `restricted`.
-  An expression has the strongest class of the signals it reads; literals and
-  device, timer or barrier events are `public`.
+  An expression has the strongest class of the signals it reads; literals are
+  `public`. Event classes are defined in "Implicit flows".
 - `AWHDL-E301`: data at or above the cloud floor must not be an argument to a
   device whose location is `cloud`. The floor is `restricted`, lowered by
   `assert never (<class> -> cloud);`.
@@ -54,8 +56,72 @@ through control flow, and cloud DLP / egress inspection are v0.2.
   to a cloud route. Route locations are configuration (`location = "cloud"`).
 - At runtime the same cloud-floor and clearance checks run again before each
   device call (defense in depth), from the declared classes of the arguments.
-- Not covered in v0.1: implicit flows through `if` conditions, and taint across
-  processes beyond declared labels (each store is checked against its label).
+- The three rules above cover **explicit flows** (data that enters arguments and
+  expressions directly).
+
+### Implicit flows (implemented, 2026-09-25)
+
+Whether and when something happens carries information too: sending a public
+value to the cloud inside an `if` on a restricted value leaks that value by the
+send itself. Each statement therefore gets a **context class**, checked
+together with the explicit flow.
+
+- **Event classes:**
+  - signal `x`, `x.changed`: the class of `x`
+  - timer: `public`
+  - barrier `b`, `b.ready`: the strongest class of its members
+  - device `d.done`, `d.failed`, `d.timeout`: the strongest of "argument class
+    and context class" over every call of `d` in the design, because a call's
+    outcome and duration may depend on the data it was given. Context classes
+    depend on event classes, so all start at `public` and are recomputed until
+    nothing changes (classes are finite and only rise, so this terminates).
+- **Context classes:**
+  - a process body: the strongest class of its sensitivity events
+  - each branch of `if` / `elsif` / `else`: the strongest of the outer context
+    and every condition of that `if` statement; reaching `else` also reveals
+    the conditions, so all of them count
+  - `on timeout`: the strongest of the outer context and the (explicit and
+    context) class of every call in the body, because whether the body times
+    out depends on how long those calls take
+  - each call of a `parallel` block: the outer context
+- **Checks** (applied only where the explicit rules pass, so no statement gets
+  two diagnostics):
+  - `AWHDL-E304`: the context class is stronger than the signal assigned to or
+    written by a call.
+  - `AWHDL-E305`: a call of a `cloud` device happens in a context at or above
+    the cloud floor.
+  - `AWHDL-E306`: the context class exceeds the called device's `clearance`.
+  - A diagnostic names where the context class comes from (a sensitivity name,
+    an `if` condition, `on timeout`).
+- The runtime re-check (defense in depth) covers explicit flows only. Implicit
+  flows are stopped by the static check, and the runtime does not run a design
+  that fails it.
+
+### Declassification (implemented, 2026-09-25)
+
+A class may be lowered only when the trusted side (deterministic checks and
+humans) allows it. LLM output, such as a local LLM's anonymization, cannot be
+shown not to leak, so on its own it never lowers a class.
+
+- Syntax and static rules are in LANGUAGE_SPEC, "Declassification". A
+  declassifier is `local` and declares its range (`from` → `to`) and means.
+- The means is chosen per design, in the syntax:
+  - **(a) human approval** (`approval => human`): the approver sees the exact
+    content to be released. As in "Action-bound approval", the approval is
+    bound to the hash of that content and holds only when the echoed hash
+    matches and it has not expired.
+  - **(b) deterministic check** (`filter => <device>`, `filter_method =>
+    <method>`): a `local` `deterministic` device is called with the content,
+    and the release passes only when the result is a JSON object whose `pass`
+    is the boolean `true`. Anything else (failure, timeout, no `pass`, `false`,
+    not JSON) fails.
+  - **(c) both**: write both; (b) runs first, and only a pass is put to the
+    human as (a).
+- With any means, a failure, a denial, or no configured approver releases
+  nothing (fail closed).
+- Audit records `design_declassified` or `design_declassify_denied` with the
+  declassifier, `from`, `to`, the source and target signal names, the SHA-256
+  of the content and the result of each means, never the content itself.
 
 ## Action-bound approval
 

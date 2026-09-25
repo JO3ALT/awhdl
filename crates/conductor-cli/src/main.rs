@@ -54,6 +54,9 @@ enum Command {
         /// One-line labels; security-significant detail is kept.
         #[arg(long)]
         compact: bool,
+        /// Do not draw location lanes (the local/cloud boundary); JSON keeps them.
+        #[arg(long)]
+        no_lanes: bool,
         /// Check and project, but write nothing.
         #[arg(long)]
         validate_only: bool,
@@ -117,6 +120,7 @@ fn main() -> ExitCode {
             show_policies,
             show_internal,
             compact,
+            no_lanes,
             validate_only,
         } => {
             let options = Options {
@@ -142,7 +146,15 @@ fn main() -> ExitCode {
                 GraphFormat::Plantuml => Format::Plantuml,
                 GraphFormat::Pnml => Format::Pnml,
             };
-            run_graph(&file, view, format, &output, &options, validate_only)
+            run_graph(
+                &file,
+                view,
+                format,
+                &output,
+                &options,
+                no_lanes,
+                validate_only,
+            )
         }
     }
 }
@@ -153,6 +165,7 @@ fn run_graph(
     format: Format,
     output: &Path,
     options: &Options,
+    no_lanes: bool,
     validate_only: bool,
 ) -> ExitCode {
     let source = match fs::read_to_string(path) {
@@ -191,13 +204,16 @@ fn run_graph(
         );
         return ExitCode::from(if flow_only { 3 } else { 2 });
     }
-    let graph = match project(&design, &source, view, options) {
+    let mut graph = match project(&design, &source, view, options) {
         Ok(graph) => graph,
         Err(error) => {
             eprintln!("{}: AWHDL-G401: {error}", path.display());
             return ExitCode::from(4);
         }
     };
+    if no_lanes && format != Format::Json {
+        graph.lanes.clear();
+    }
     let text = match render(&graph, format) {
         Ok(text) => text,
         Err(error) => {

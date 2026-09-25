@@ -60,9 +60,10 @@ cargo test --workspace
 cargo run -p conductor-cli -- check examples/hello.awhdl
 cargo run -p conductor-cli -- check examples/hello.awhdl --output json
 cargo run -p conductor-cli -- graph examples/tutorial/05_parallel_barrier.awhdl --view behavior
+cargo run -p conductor-cli -- graph examples/secure_cooperation.awhdl --view petri --format dot | dot -Tsvg -o petri.svg
 ```
 
-解析または構造検査に失敗すると、ソース位置を示して0以外の終了状態を返します。`aic graph` は検査を通った設計を Mermaid・Graphviz DOT・JSON の図にします（structure・behavior・petri・security・activity の各ビュー。activity は PlantUML、petri は PNML でも出力。[図示](docs/GRAPH_ja.md)）。
+解析または構造検査に失敗すると、ソース位置を示して0以外の終了状態を返します。`aic graph` は検査を通った設計を Mermaid・Graphviz DOT・JSON の図にします（structure・behavior・petri・security・activity の各ビュー。activity は PlantUML、petri は PNML でも出力。[図示](docs/GRAPH_ja.md)）。`examples/secure_cooperation.awhdl` は、ローカル LLM で匿名化したデータを、決定的な検査と人の承認を経て機密解除し、クラウドの AI が解析する公式サンプルです。
 
 ## ドキュメント
 

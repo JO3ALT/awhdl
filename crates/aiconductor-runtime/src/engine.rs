@@ -7,7 +7,7 @@ use crate::capability::CapabilityRequest;
 use crate::completion::{CompletionFacts, CompletionPolicy, CompletionStatus, evaluate};
 use crate::config::{ActionConfig, LaunchProfile, ProjectConfig};
 use crate::decider::{DecisionClient, StepSummary, build_options, build_state};
-use crate::design::{BoundDevice, DesignOutcome, DesignRun, Dispatcher, compile};
+use crate::design::{BoundDevice, DesignOutcome, DesignRun, Dispatcher, ReleaseRequest, compile};
 use crate::effect::EffectDecision;
 use crate::effect::EffectRequest;
 use crate::llm::LlmClient;
@@ -1161,6 +1161,65 @@ impl Dispatcher for EngineDispatcher<'_> {
         Ok(serde_json::from_str(&text).unwrap_or(Value::String(text)))
     }
 
+    /// Ask the configured human approver to release this exact content. The
+    /// request is bound to the hash of its canonical form, which the answer
+    /// must echo; no approver means no release.
+    async fn approve_release(&mut self, request: &ReleaseRequest) -> Result<bool> {
+        let Some(approver) = &self.engine.approver else {
+            bail!("no human approver is configured; declassification fails closed");
+        };
+        let canonical_action = json!({
+            "schema": "awhdl-declassify/1",
+            "declassifier": request.declassifier,
+            "from": request.from,
+            "to": request.to,
+            "source": request.source,
+            "target": request.target,
+            "context": request.context,
+            "content_sha256": request.content_sha256,
+            "content": request.content,
+        });
+        let action_hash = crate::effect::sha256_hex(&serde_json::to_vec(&canonical_action)?);
+        let ttl = self
+            .engine
+            .config
+            .runtime
+            .approval
+            .as_ref()
+            .map_or(600, |settings| settings.ttl_sec);
+        let pending = crate::approval::ApprovalRequest {
+            approval_id: uuid::Uuid::new_v4(),
+            action_hash: action_hash.clone(),
+            expires_at: chrono::Utc::now() + chrono::Duration::seconds(ttl),
+            display: format!(
+                "機密解除 {} -> {} ({:?} -> {:?})",
+                request.source, request.target, request.from, request.to
+            ),
+            canonical_action,
+        };
+        self.audit.event(
+            "declassify_approval_requested",
+            json!({"approval_id": pending.approval_id, "action_hash": action_hash, "expires_at": pending.expires_at}),
+            &self.budget.usage,
+        )?;
+        let answer = approver.ask(&pending).await?;
+        anyhow::ensure!(
+            answer.echoed_action_hash == action_hash,
+            "declassification answer does not echo the requested hash"
+        );
+        anyhow::ensure!(
+            chrono::Utc::now() <= pending.expires_at,
+            "declassification approval expired"
+        );
+        let granted = answer.decision == ApprovalDecision::Grant;
+        self.audit.event(
+            "declassify_approval_decided",
+            json!({"approval_id": pending.approval_id, "granted": granted}),
+            &self.budget.usage,
+        )?;
+        Ok(granted)
+    }
+
     fn record(&mut self, event: &str, data: Value) -> Result<()> {
         self.audit.event(event, data, &self.budget.usage)
     }
@@ -1202,6 +1261,63 @@ mod tests {
         let mut engine = Engine::new(ProjectConfig::load(root).unwrap()).unwrap();
         engine.approver = human.map(|h| Box::new(h) as Box<dyn Approver>);
         engine
+    }
+
+    const RELEASE_DESIGN: &str = r#"
+entity release_check is
+    port (task : in text<restricted>; report : out text<internal>);
+end release_check;
+architecture flow of release_check is
+    device release : declassifier generic (from => restricted, to => internal, approval => human);
+    signal released : text<internal>;
+begin
+    process(task)
+    begin
+        released <= declassify task using release;
+    end process;
+    process(released)
+    begin
+        report <= released;
+    end process;
+end flow;
+"#;
+
+    async fn release_with(human: Option<ScriptedHuman>) -> Result<DesignOutcome> {
+        let dir = tempfile::tempdir().unwrap();
+        let mut engine = engine(human);
+        engine.config.root = dir.path().to_path_buf();
+        engine
+            .run_design(
+                RELEASE_DESIGN,
+                BTreeMap::from([("task".to_owned(), json!("anonymized text"))]),
+            )
+            .await
+    }
+
+    #[tokio::test]
+    async fn declassification_asks_the_human_approver_with_a_bound_hash() {
+        let granted = release_with(Some(ScriptedHuman {
+            decision: ApprovalDecision::Grant,
+            tamper_hash: false,
+        }))
+        .await
+        .unwrap();
+        assert_eq!(granted.outputs["report"], json!("anonymized text"));
+        // A denial, a tampered hash, or no approver release nothing.
+        for human in [
+            Some(ScriptedHuman {
+                decision: ApprovalDecision::Deny,
+                tamper_hash: false,
+            }),
+            Some(ScriptedHuman {
+                decision: ApprovalDecision::Grant,
+                tamper_hash: true,
+            }),
+            None,
+        ] {
+            let outcome = release_with(human).await.unwrap();
+            assert_eq!(outcome.outputs["report"], Value::Null);
+        }
     }
 
     #[tokio::test]

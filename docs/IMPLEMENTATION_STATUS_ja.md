@@ -11,7 +11,7 @@
 ## リリース状態（2026-09-23）
 
 - 仕様: ドラフト v0.2。実装範囲: PROFILE_v0.1
-- コンパイラ: parser、静的検査（構造 `E2xx`・情報フロー `E3xx`・Profile `E4xx`）、
+- コンパイラ: parser、静的検査（構造 `E2xx`・情報フロー `E3xx`（暗黙のフロー `E304`〜`E306` を含む）・Profile `E4xx`）、
   route への束縛を伴う Rust runtime へのコンパイル
 - CLI: `aic check <file>`、`aic graph <file>`（[図示](GRAPH_ja.md)）、`aiconductor run-design <file> --input name=value`
 - ランタイム: process・timer・timeout・parallel・barrier・budget・assertion を
@@ -21,6 +21,8 @@
 
 - エンティティ、ポート、アーキテクチャ
 - `agent` / `mcp` / `deterministic` のデバイスと `generic (...)`（`route`・`location`・`clearance`）
+- `declassifier` のデバイス（`from`・`to`・`filter`・`filter_method`・`approval`）と
+  `x <= declassify e using d;`（決定的な検査と人の承認の一方または両方で機密解除）
 - 機密区分付きの信号と定数初期値
 - `timer`・`budget`・`barrier` 宣言
 - `assert always (...)`・`assert never (...)`・`assert never (<区分> -> <配置>)`

@@ -190,6 +190,15 @@ impl<'a> Symbols<'a> {
             .find(|device| device.name == name)
     }
 
+    /// The strongest class an expression reads; literals are public.
+    fn class_of_expr(&self, expression: &awhdl_ast::Expression) -> Class {
+        self.reads(expression.expr.names())
+            .into_iter()
+            .filter_map(|name| self.class(name))
+            .max()
+            .unwrap_or(Class::Public)
+    }
+
     fn class(&self, name: &str) -> Option<Class> {
         self.values.get(name).map(|info| class_of(info.data_type))
     }
@@ -241,6 +250,28 @@ impl<'a> Symbols<'a> {
     }
 }
 
+/// A declassifier's range and means, for labels: `restricted -> internal`,
+/// `filter pii_check.scan + human approval`.
+fn release_terms(device: &DeviceDecl) -> (String, String) {
+    let ident = |key: &str| device.generic(key).and_then(GenericValue::as_ident);
+    let range = format!(
+        "{} -> {}",
+        ident("from").unwrap_or("?"),
+        ident("to").unwrap_or("?")
+    );
+    let mut means = Vec::new();
+    if let Some(filter) = ident("filter") {
+        means.push(format!(
+            "filter {filter}.{}",
+            ident("filter_method").unwrap_or("?")
+        ));
+    }
+    if ident("approval") == Some("human") {
+        means.push("human approval".to_owned());
+    }
+    (range, means.join(" + "))
+}
+
 enum Trigger<'s> {
     Value(&'s str),
     Timer(&'s TimerDecl),
@@ -280,6 +311,7 @@ fn each_statement<'s>(
             SequentialStatement::Parallel(_)
             | SequentialStatement::DeviceCall(_)
             | SequentialStatement::Assignment(_)
+            | SequentialStatement::Declassify(_)
             | SequentialStatement::Assert { .. }
             | SequentialStatement::Null { .. } => {}
         }
@@ -379,6 +411,7 @@ impl Builder<'_> {
             generation_sensitive: false,
             metadata: BTreeMap::new(),
             group: None,
+            lane: None,
         });
         self.nodes.last_mut().expect("just pushed")
     }
@@ -507,6 +540,11 @@ impl Builder<'_> {
             );
         }
         let mut significant = vec![format!("{} · {location}", device.device_type)];
+        if device.device_type == "declassifier" {
+            let (range, means) = release_terms(device);
+            significant.push(range);
+            significant.push(means);
+        }
         if let Some(clearance) = &clearance
             && self.show_class()
         {
@@ -616,7 +654,69 @@ impl Builder<'_> {
         }
     }
 
+    /// Put a node that calls `device` into that device's location lane.
+    fn call_lane(&mut self, id: &str, s: &Symbols, device: &str) {
+        let lane = s
+            .device(device)
+            .map(|device| location_name(location_of(device)).to_owned());
+        if let Some(&index) = self.node_index.get(id) {
+            self.nodes[index].lane = lane;
+        }
+    }
+
+    /// Everything the orchestrator runs is local; edges between lanes cross
+    /// the boundary and are drawn as checked crossings.
+    fn assign_lanes(&mut self) -> Vec<crate::Lane> {
+        if !matches!(self.view, View::Activity | View::Petri | View::Behavior) {
+            return Vec::new();
+        }
+        for node in &mut self.nodes {
+            node.lane.get_or_insert_with(|| "local".to_owned());
+        }
+        let lane = |id: &str| {
+            self.node_index
+                .get(id)
+                .and_then(|&index| self.nodes[index].lane.clone())
+        };
+        let crossings = self
+            .edges
+            .iter()
+            .enumerate()
+            .filter_map(|(index, edge)| match (lane(&edge.from), lane(&edge.to)) {
+                (Some(from), Some(to)) if from != to => Some((index, format!("{from} -> {to}"))),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        for (index, crossing) in crossings {
+            let edge = &mut self.edges[index];
+            edge.guarded = true;
+            edge.security_significant = true;
+            edge.metadata.insert("crossing".to_owned(), crossing);
+        }
+        let mut present = self
+            .nodes
+            .iter()
+            .filter_map(|node| node.lane.clone())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        // Most protected first: local, then the external locations.
+        present.sort_by_key(|lane| (lane != "local", lane.clone()));
+        present
+            .into_iter()
+            .map(|id| crate::Lane {
+                label: match id.as_str() {
+                    "local" => "local (protected)".to_owned(),
+                    "cloud" => "cloud (external)".to_owned(),
+                    other => other.to_owned(),
+                },
+                id,
+            })
+            .collect()
+    }
+
     fn finish(mut self, symbols: &Symbols) -> Graph {
+        let lanes = self.assign_lanes();
         if self.view == View::Security {
             // Every flow of non-public data is what the security view is for.
             for edge in &mut self.edges {
@@ -654,6 +754,7 @@ impl Builder<'_> {
             nodes: self.nodes,
             edges: self.edges,
             groups: self.groups,
+            lanes,
             annotations: self.annotations,
         }
     }
@@ -728,6 +829,35 @@ fn structure(b: &mut Builder, s: &Symbols) {
                 }
                 writes.push(to);
             }
+            if let SequentialStatement::Declassify(release) = statement
+                && let Some(device) = s.device(&release.declassifier)
+            {
+                let releaser = b.device(device, Some(&entity_group));
+                for read in s.reads(release.value.expr.names()) {
+                    let from = b.value(s, read);
+                    b.edge(&from, &releaser, EdgeKind::DataFlow, None);
+                }
+                let to = b.value(s, &release.target);
+                let (range, _) = release_terms(device);
+                let edge = b.edge(&releaser, &to, EdgeKind::Declassification, Some(range));
+                edge.guarded = true;
+                edge.security_significant = true;
+                if let Some(filter) = device
+                    .generic("filter")
+                    .and_then(GenericValue::as_ident)
+                    .and_then(|name| s.device(name))
+                {
+                    let checker = b.device(filter, Some(&entity_group));
+                    b.edge(
+                        &releaser,
+                        &checker,
+                        EdgeKind::Call,
+                        Some("filter".to_owned()),
+                    )
+                    .asynchronous = true;
+                }
+                writes.push(releaser);
+            }
         }
         // What wakes the process reaches everything it drives.
         for text in &process.sensitivity {
@@ -790,6 +920,7 @@ fn mark_cloud_egress(edge: &mut Edge) {
 #[derive(Default)]
 struct Counters {
     calls: usize,
+    releases: usize,
     decisions: usize,
     forks: usize,
     asserts: usize,
@@ -891,7 +1022,7 @@ fn walk_behavior(
         match statement {
             SequentialStatement::DeviceCall(call) => {
                 counters.calls += 1;
-                let invocation = invocation_node(b, process, counters.calls, call);
+                let invocation = lane_invocation(b, s, process, counters.calls, call);
                 control(b, &invocation, EdgeKind::Call, None);
                 let output = b.value(s, &call.output);
                 b.edge(&invocation, &output, EdgeKind::Result, None)
@@ -963,7 +1094,7 @@ fn walk_behavior(
                 control(b, &fork, EdgeKind::Control, None);
                 for call in &parallel.calls {
                     counters.calls += 1;
-                    let invocation = invocation_node(b, process, counters.calls, call);
+                    let invocation = lane_invocation(b, s, process, counters.calls, call);
                     b.edge(&fork, &invocation, EdgeKind::Fork, None);
                     let edge = b.edge(&invocation, &join, EdgeKind::Join, None);
                     edge.asynchronous = true;
@@ -971,6 +1102,37 @@ fn walk_behavior(
                     let output = b.value(s, &call.output);
                     b.edge(&join, &output, EdgeKind::Result, None);
                     outcomes(b, s, call, &invocation);
+                }
+            }
+            SequentialStatement::Declassify(release) => {
+                counters.releases += 1;
+                let id = format!("declassify:p{process}.r{}", counters.releases);
+                let (range, means) = s
+                    .device(&release.declassifier)
+                    .map(release_terms)
+                    .unwrap_or_default();
+                let node = b.node(
+                    &id,
+                    NodeKind::Declassifier,
+                    &format!("declassify {}", clip(&release.value.source)),
+                    Some(release.span),
+                    vec![format!("using {}", release.declassifier)],
+                    vec![range, means],
+                );
+                node.metadata
+                    .insert("device".to_owned(), release.declassifier.clone());
+                control(b, &id, EdgeKind::Call, None);
+                let target = b.value(s, &release.target);
+                let edge = b.edge(&id, &target, EdgeKind::Declassification, None);
+                edge.asynchronous = true;
+                edge.guarded = true;
+                edge.security_significant = true;
+                for outcome in ["done", "failed"] {
+                    if s.subscribed(&release.declassifier, outcome) || b.options.show_internal {
+                        let event = event_node(b, &format!("{}.{outcome}", release.declassifier));
+                        b.edge(&id, &event, EdgeKind::Result, Some(outcome.to_owned()))
+                            .asynchronous = true;
+                    }
                 }
             }
             SequentialStatement::Assert {
@@ -1015,6 +1177,19 @@ fn invocation_node(b: &mut Builder, process: usize, number: usize, call: &Device
         .insert("device".to_owned(), call.device.clone());
     node.metadata
         .insert("method".to_owned(), call.method.clone());
+    id
+}
+
+/// An invocation node with its device's location lane.
+fn lane_invocation(
+    b: &mut Builder,
+    s: &Symbols,
+    process: usize,
+    number: usize,
+    call: &DeviceCall,
+) -> String {
+    let id = invocation_node(b, process, number, call);
+    b.call_lane(&id, s, &call.device);
     id
 }
 
@@ -1133,6 +1308,61 @@ fn security(b: &mut Builder, s: &Symbols) {
                         .insert("state".to_owned(), "allowed".to_owned());
                 }
             }
+            // The only place a class goes down: through a declassifier, shown as such.
+            if let SequentialStatement::Declassify(release) = statement
+                && let Some(device) = s.device(&release.declassifier)
+            {
+                let releaser = b.device(device, None);
+                for read in s.reads(release.value.expr.names()) {
+                    let from = b.value(s, read);
+                    let class = s.class(read).map(class_name).unwrap_or("public");
+                    let edge = b.edge(
+                        &from,
+                        &releaser,
+                        EdgeKind::SecurityFlow,
+                        Some(class.to_owned()),
+                    );
+                    edge.classification = Some(class.to_owned());
+                    edge.metadata
+                        .insert("state".to_owned(), "allowed".to_owned());
+                }
+                // The exact content goes to the local filter before any release.
+                if let Some(filter) = device
+                    .generic("filter")
+                    .and_then(GenericValue::as_ident)
+                    .and_then(|name| s.device(name))
+                {
+                    let checker = b.device(filter, None);
+                    let class = class_name(s.class_of_expr(&release.value));
+                    let edge = b.edge(
+                        &releaser,
+                        &checker,
+                        EdgeKind::SecurityFlow,
+                        Some(format!("{class} · filter check")),
+                    );
+                    edge.classification = Some(class.to_owned());
+                    edge.metadata
+                        .insert("state".to_owned(), "allowed".to_owned());
+                }
+                let to = b.value(s, &release.target);
+                let (range, means) = release_terms(device);
+                let to_class = device
+                    .generic("to")
+                    .and_then(GenericValue::as_ident)
+                    .unwrap_or("public")
+                    .to_owned();
+                let edge = b.edge(
+                    &releaser,
+                    &to,
+                    EdgeKind::Declassification,
+                    Some(format!("declassified {range} · {means}")),
+                );
+                edge.classification = Some(to_class);
+                edge.guarded = true;
+                edge.security_significant = true;
+                edge.metadata
+                    .insert("state".to_owned(), "declassified".to_owned());
+            }
         }
     }
 
@@ -1193,8 +1423,8 @@ fn security(b: &mut Builder, s: &Symbols) {
         }
     }
     b.annotate(
-        "v0.1 profile: no declassifier or gateway device; a classification is never lowered. \
-         Derived data keeps the strongest class of its inputs.",
+        "A classification goes down only through a declassifier (declassification edges); \
+         derived data otherwise keeps the strongest class of its inputs. No gateway device in v0.1.",
     );
 }
 
@@ -1493,14 +1723,14 @@ mod tests {
                 edge.id
             );
         }
-        // The inputs wake process 1 when the run starts, and nothing else.
+        // The inputs wake processes 1 (task, source) and 4 (note) when the run starts.
         let marked = graph
             .nodes
             .iter()
             .filter(|node| node.metadata.contains_key("tokens"))
             .map(|node| node.id.as_str())
             .collect::<Vec<_>>();
-        assert_eq!(marked, ["place:p1.wake"]);
+        assert_eq!(marked, ["place:p1.wake", "place:p4.wake"]);
         let into = |place: &str| {
             graph
                 .edges
@@ -1515,8 +1745,11 @@ mod tests {
         assert!(woken.contains(&"transition:p2.s1.call1.failed"));
         // A call timeout raises local_coder.timeout (process 6).
         assert!(into("place:p6.wake").contains(&"transition:p1.s1.timeout"));
-        // A broadcast is explicit: every changed write of status reaches process 4.
-        assert_eq!(into("place:p4.wake").len(), 3);
+        // A broadcast is explicit: the changed write of candidate by process 1
+        // and by process 3 both reach process 2.
+        let candidate = into("place:p2.wake");
+        assert!(candidate.contains(&"transition:p1.s1.done.changed"));
+        assert_eq!(candidate.len(), 2);
         // Barrier members and the parallel join are generation-aware.
         assert!(node(&graph, "transition:barrier.validated").generation_sensitive);
         assert!(node(&graph, "transition:p2.s1.join").generation_sensitive);
@@ -1526,6 +1759,127 @@ mod tests {
                 .iter()
                 .filter(|edge| edge.to == "transition:p2.s1.join")
                 .all(|edge| edge.generation_binding.is_some())
+        );
+    }
+
+    const COOPERATION: &str = include_str!("../../../examples/secure_cooperation.awhdl");
+
+    #[test]
+    fn the_official_sample_shows_its_release_in_every_view() {
+        // Security: restricted data reaches the cloud only through the declassifier.
+        let security = graph(COOPERATION, View::Security, &Options::default());
+        let release = security
+            .edges
+            .iter()
+            .find(|edge| edge.kind == EdgeKind::Declassification)
+            .expect("a declassification edge");
+        assert_eq!(
+            (release.from.as_str(), release.to.as_str()),
+            ("device:release", "value:anonymous")
+        );
+        assert_eq!(release.metadata["state"], "declassified");
+        assert!(release.guarded && release.security_significant);
+        let into_cloud = security
+            .edges
+            .iter()
+            .filter(|edge| edge.to == "device:frontier" && !edge.denied)
+            .map(|edge| edge.from.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(into_cloud, ["value:anonymous", "value:question"]);
+        assert!(
+            security
+                .edges
+                .iter()
+                .any(|edge| edge.from == "device:release" && edge.to == "device:pii_check")
+        );
+        // Petri: granted and refused compete, and only the frontier's outcomes are in the cloud.
+        let petri = graph(COOPERATION, View::Petri, &Options::default());
+        let granted = petri
+            .nodes
+            .iter()
+            .filter(|node| node.metadata.get("release").map(String::as_str) == Some("granted"))
+            .count();
+        assert_eq!(granted, 2, "changed and unchanged");
+        node(&petri, "transition:p2.s1.refused");
+        let cloud = petri
+            .nodes
+            .iter()
+            .filter(|node| node.lane.as_deref() == Some("cloud"))
+            .all(|node| node.label[0].starts_with("frontier.analyze"));
+        assert!(cloud);
+        // Activity: the release action switches on granted / refused.
+        let activity = graph(COOPERATION, View::Activity, &Options::default());
+        let outcome = node(&activity, "activity:p2.s1.outcome");
+        assert_eq!(outcome.metadata["style"], "switch");
+        // Structure and behavior draw the release too.
+        let structure = graph(COOPERATION, View::Structure, &Options::default());
+        assert_eq!(
+            node(&structure, "device:release").kind,
+            NodeKind::Declassifier
+        );
+        let behavior = graph(COOPERATION, View::Behavior, &Options::default());
+        assert_eq!(
+            node(&behavior, "declassify:p2.r1").kind,
+            NodeKind::Declassifier
+        );
+    }
+
+    #[test]
+    fn lanes_mark_the_local_cloud_boundary() {
+        for view in [View::Activity, View::Petri, View::Behavior] {
+            let graph = graph(SECURE, view, &Options::default());
+            let lanes = graph
+                .lanes
+                .iter()
+                .map(|lane| lane.id.as_str())
+                .collect::<Vec<_>>();
+            assert_eq!(lanes, ["local", "cloud"], "{view:?}");
+            let cloud = graph
+                .nodes
+                .iter()
+                .filter(|node| node.lane.as_deref() == Some("cloud"))
+                .collect::<Vec<_>>();
+            assert!(!cloud.is_empty());
+            // Only calls of the cloud device live in the cloud lane.
+            for node in &cloud {
+                assert!(
+                    node.label[0].contains("cloud_reviewer.review"),
+                    "{}",
+                    node.id
+                );
+            }
+            // Every edge between lanes is a checked crossing, in both directions.
+            let crossings = graph
+                .edges
+                .iter()
+                .filter(|edge| edge.metadata.contains_key("crossing"))
+                .collect::<Vec<_>>();
+            assert!(
+                crossings
+                    .iter()
+                    .all(|edge| edge.guarded && edge.security_significant)
+            );
+            for direction in ["local -> cloud", "cloud -> local"] {
+                assert!(
+                    crossings
+                        .iter()
+                        .any(|edge| edge.metadata["crossing"] == direction),
+                    "{view:?} {direction}"
+                );
+            }
+        }
+        // Views that draw zones themselves have no lanes; a local-only design has one.
+        assert!(
+            graph(SECURE, View::Security, &Options::default())
+                .lanes
+                .is_empty()
+        );
+        let hello = include_str!("../../../examples/hello.awhdl");
+        assert_eq!(
+            graph(hello, View::Activity, &Options::default())
+                .lanes
+                .len(),
+            1
         );
     }
 

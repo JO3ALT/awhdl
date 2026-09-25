@@ -1,0 +1,70 @@
+-- Secure cooperation between a local LLM and a frontier AI in the cloud.
+--
+-- The raw records are restricted and never leave the local, protected region.
+-- A local LLM anonymizes them, but its output is still restricted: an LLM cannot
+-- prove that nothing leaked. Only the declassifier `release` may lower it, and
+-- only when both trusted means allow it:
+--   (b) a deterministic check on the exact text (filter => pii_check), and
+--   (a) a human who sees the exact text and where it is released (approval => human).
+-- The released text is internal, so the frontier model in the cloud may analyze it.
+--
+-- `aic check` accepts this design; `aic graph` draws it with the local/cloud lanes.
+-- At run time the check route must answer {"pass": true} only for text without
+-- personal data. Until such a route is configured, every release is refused and
+-- nothing reaches the cloud (fail closed).
+entity secure_cooperation is
+    port (
+        records  : in  text<restricted>;   -- raw records: never leave the local region
+        question : in  text<public>;       -- what to ask the frontier model
+        analysis : out text<internal>;     -- the frontier model's answer
+        status   : out text<restricted>    -- why nothing was analyzed, if so
+    );
+end secure_cooperation;
+
+architecture hybrid of secure_cooperation is
+    -- Local, protected region
+    device anonymizer : agent generic (location => local, clearance => restricted, route => "initial_coding");
+    device pii_check  : deterministic generic (location => local, route => "text_filtering");
+    device release    : declassifier generic (from => restricted, to => internal,
+                                              filter => pii_check, filter_method => run_filter_pipeline,
+                                              approval => human);
+    -- External region
+    device frontier   : agent generic (location => cloud, clearance => internal, route => "deep_reasoning");
+
+    signal draft     : text<restricted>;   -- anonymized by the local LLM, not yet trusted
+    signal anonymous : text<internal>;     -- released: checked and approved
+
+    budget cooperation is
+        model_calls <= 4;
+        wall_time <= 30 min;
+    end budget;
+begin
+    -- 1. Anonymize locally.
+    process(records)
+    begin
+        anonymizer.run(records) timeout 5 min -> draft;
+    end process;
+
+    -- 2. Release only what the PII check passes and a human approves.
+    process(draft)
+    begin
+        anonymous <= declassify draft using release;
+    end process;
+
+    -- 3. Analyze in the cloud. Only internal and public data reach this point.
+    process(anonymous, question)
+    begin
+        frontier.analyze(anonymous, question) timeout 10 min -> analysis;
+    end process;
+
+    -- A refused release keeps everything local.
+    process(release.failed)
+    begin
+        status <= "release refused: the anonymized text stays local";
+    end process;
+
+    process(anonymizer.failed, frontier.failed)
+    begin
+        status <= "a model call failed";
+    end process;
+end hybrid;

@@ -11,6 +11,9 @@
 \usepackage{tabularx}
 \usepackage{array}
 \usepackage[most]{tcolorbox}
+\usepackage{graphicx}
+\usepackage{placeins}
+\usepackage{rotating}
 \usepackage{tikz}
 \usetikzlibrary{arrows.meta,positioning,fit,shapes.geometric}
 \usepackage[hidelinks,pdfusetitle]{hyperref}
@@ -27,7 +30,8 @@
 \lstdefinelanguage{AWHDL}{
   morekeywords={entity,architecture,is,of,port,in,out,inout,end,begin,
     device,generic,signal,timer,period,budget,barrier,process,timeout,on,
-    if,then,elsif,else,parallel,assert,always,never,null,and,or,not,true,false},
+    if,then,elsif,else,parallel,assert,always,never,null,and,or,not,true,false,
+    declassify,using},
   sensitive=true,
   morecomment=[l]{--},
   morestring=[b]",
@@ -60,7 +64,7 @@
 
 \title{AWHDL チュートリアル\\\large Agentic Workflow Harness Description Language v0.1}
 \author{AI Conductor プロジェクト}
-\date{2026年9月24日}
+\date{2026年9月25日}
 
 \begin{document}
 \maketitle
@@ -70,7 +74,8 @@ AWHDL は、複数の AI・MCP ツール・決定的プログラム・人間を�
 型付き・イベント駆動の設計として記述する言語です。本チュートリアルでは、
 実機で動作を確認した 6 つの設計例を順にたどり、\texttt{entity}／\texttt{architecture}、
 device と route の束縛、signal と delta cycle、タイマーと予算、フィードバックループ、
-並列実行とバリア、情報フロー検査までを学びます。
+並列実行とバリア、情報フロー検査（暗黙のフローと機密解除を含む）までを学びます。最後に、設計を構成図・振る舞いの図・
+アクティビティ図・Petri ネット・情報フロー図として描く \texttt{aic graph} を紹介します。
 \end{abstract}
 
 \tableofcontents
@@ -90,6 +95,7 @@ device と route の束縛、signal と delta cycle、タイマーと予算、�
   \item \texttt{aic check} による構文・構造・情報フローの静的検査
   \item \texttt{aiconductor run-design} による実機での実行（27B モデル、Prolog、Lean、KDB を使用）
 \end{itemize}
+第\ref{sec:graph}節の図は、2026年9月25日に \texttt{aic graph} と Graphviz 2.43 で作成しました。
 
 \subsection{AWHDL が解く問題}
 
@@ -122,7 +128,9 @@ AI にツールを使わせる仕組みでは、「どの AI がどのデータ�
 \node[box,below=12mm of rt] (eng) {AI Conductor エンジン\\権限・Effect・承認・監査};
 \node[box,left=10mm of eng] (dev) {device\\LLM / MCP};
 \node[box,right=10mm of rt] (out) {出力 JSON};
+\node[box,below=12mm of src] (gr) {\texttt{aic graph}\\図示};
 \draw[arr] (src) -- (chk);
+\draw[arr] (chk) -- (gr);
 \draw[arr] (chk) -- (rt);
 \draw[arr] (rt) -- (out);
 \draw[arr] (rt) -- (eng);
@@ -146,7 +154,9 @@ Effect の記録、承認、監査ログがすべて適用されます。
         そこで設定された route（モデルや MCP サーバー）
 \end{itemize}
 
-静的検査（\texttt{aic check}）だけなら、モデルや MCP サーバーは不要です。
+静的検査（\texttt{aic check}）と図示（\texttt{aic graph}）だけなら、モデルや MCP サーバーは不要です。
+図を画像にするには Graphviz（\texttt{dot} コマンド）を使います。アクティビティ図を PlantUML で
+描く場合は Java と PlantUML も使います（第\ref{sec:graph}節）。
 
 \subsection{ビルド}
 
@@ -171,6 +181,10 @@ export CARGO_TARGET_DIR=~/.cache/aiconductor/cargo-target
 # 静的検査（終了状態 0 = 合格）
 aic check examples/tutorial/01_hello.awhdl
 aic check examples/tutorial/01_hello.awhdl --output json
+
+# 図示（DOT を Graphviz で PDF にする）
+aic graph examples/tutorial/05_parallel_barrier.awhdl \
+    --view behavior --format dot | dot -Tpdf -o behavior.pdf
 
 # 実行（--project-root は AI Conductor のルート）
 aiconductor --project-root <AIConductor> run-design \
@@ -422,8 +436,69 @@ $ echo $?
   \item device に \texttt{clearance => public} などを付けると、その device が受け取れる区分の上限を
         決められます（超えると E302）。
   \item 低い区分の signal に高い区分のデータを代入することはできません（E303）。
-        v0.1 には区分を下げる仕組み（declassifier）はありません。
+        区分を下げられるのは、第\ref{sec:declassify}節の \texttt{declassify} 文だけです。
 \end{itemize}
+
+\subsection{暗黙のフロー}
+
+データを直接渡さなくても、情報は漏れます。次の例では、クラウドへ送るのは \texttt{public} の
+\texttt{count} だけですが、「送ったかどうか」が \texttt{restricted} の \texttt{secret} の値を表します。
+
+\begin{lstlisting}[language=AWHDL]
+if secret = "yes" then
+    reviewer.review(count) -> answer;    -- E305: restricted の条件の中でクラウドを呼ぶ
+end if;
+\end{lstlisting}
+
+\texttt{aic check} は、各文に\textbf{文脈の区分}を与えて検査します。文脈の区分は、process を起動した事象
+（signal の区分、device の呼び出しに渡したデータの区分など）と、囲んでいる \texttt{if} の条件のうち
+最も強い区分です。文脈の区分が書き込み先より強いと E304、クラウドへの呼び出しなら E305、
+device の \texttt{clearance} を超えると E306 になります。
+
+\subsection{機密解除：declassify}\label{sec:declassify}
+
+ローカルの LLM で個人情報を匿名化してから、クラウドのフロンティア AI に解析させたいことがあります。
+しかし LLM の出力は、漏れていないことを保証できません。そのため、匿名化した結果も
+\texttt{restricted} のままです。区分を下げられるのは \texttt{declassify} 文だけで、
+それには \textbf{declassifier} を使います。
+
+declassifier は、解除できる範囲（\texttt{from} から \texttt{to}）と、解除を認める手段を宣言します。
+手段は次から構文で選び、両方を書くと両方が必要になります。
+\begin{itemize}
+  \item \texttt{filter => <device>, filter\_method => <method>}：ローカルの \texttt{deterministic} device による
+        決定的な検査。結果が JSON で \texttt{"pass": true} のときだけ合格です。
+  \item \texttt{approval => human}：人の承認。承認者は解除する内容そのものと、どこで解除されるかを見て判断します。
+\end{itemize}
+失敗・拒否・承認者の未設定のいずれでも、何も解除しません（fail closed）。
+
+\lstinputlisting[language=AWHDL,caption={\texttt{examples/secure\_cooperation.awhdl}（公式サンプル）}]{../../examples/secure_cooperation.awhdl}
+
+\begin{enumerate}
+  \item ローカル LLM（\texttt{anonymizer}）が \texttt{records} を匿名化して \texttt{draft}（restricted）にします。
+  \item \texttt{release} が、PII 検査と人の承認の両方で認めたときだけ、\texttt{draft} を
+        \texttt{anonymous}（internal）に解除します。
+  \item クラウドの \texttt{frontier} が \texttt{anonymous} と \texttt{question} を解析します。
+  \item 解除が拒否されると \texttt{release.failed} で理由を残し、何もクラウドへ出ません。
+\end{enumerate}
+
+このサンプルを少し崩すと、検査がそれぞれ止めます。
+
+\begin{center}
+\small
+\begin{tabular}{ll}
+\toprule
+崩し方 & 診断 \\
+\midrule
+\texttt{declassify} を使わず \texttt{anonymous <= draft;} と書く & E303 \\
+\texttt{approval => human} を外し、フィルタだけにする & E304 \\
+匿名化前の \texttt{draft} をクラウドへ渡す & E301、E302、E303 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+フィルタだけの declassifier は内容しか見ないため、restricted の事象で起動された process の中では
+使えません（E304）。人の承認がある declassifier は、承認依頼に解除の文脈も示すので、\texttt{from}
+までの文脈で使えます。
 
 \subsection{設計の外にある安全機構}
 
@@ -437,6 +512,210 @@ $ echo $?
 設計から device を呼び出すと、これらがすべて適用されます。
 設計の側からこれらを無効にする構文はありません。
 
+%======================================================================
+\section{設計を図にする（aic graph）}\label{sec:graph}
+
+\texttt{aic graph} は、\texttt{aic check} に合格した設計を図にします。図は検査済みの設計から導いた
+\textbf{派生ビュー}であり、実行の意味は定めません（実行の意味は RUNTIME\_SPEC が定めます）。
+検査に通らない設計は描きません。
+
+\subsection{ビューと出力形式}
+
+\begin{table}[h]
+\centering
+\caption{\texttt{aic graph} のビュー（\texttt{--view}）}
+\begin{tabularx}{\linewidth}{lX}
+\toprule
+ビュー & 表すもの \\
+\midrule
+\texttt{structure} & entity の境界、ポート、signal、配置ごとの zone に入った device、主なデータの流れ \\
+\texttt{behavior} & process と、それを起動する事象、非同期の呼び出し、分岐、\texttt{parallel}、バリア、timeout、ループ \\
+\texttt{activity} & UML アクティビティ図。process とバリアごとに1つのアクティビティ \\
+\texttt{petri} & データを抽象化した Petri ネット（P/T ネット）。解析ツールに渡せる \\
+\texttt{security} & 機密区分、配置の zone、クラウドへ出る流れ、人の承認、拒否される流れ \\
+\texttt{state} & 宣言された状態。v0.1 には状態型がないため、現在は常に拒否される \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\begin{table}[h]
+\centering
+\caption{出力形式（\texttt{--format}）}
+\begin{tabularx}{\linewidth}{lX}
+\toprule
+形式 & 使い方 \\
+\midrule
+\texttt{mermaid} & 既定。GitHub などの Markdown に貼るとそのまま描かれる \\
+\texttt{dot} & Graphviz で PDF・SVG・PNG にする（\texttt{dot -Tpdf} など）。本節の図はこの形式 \\
+\texttt{json} & 図の中身（ノード・辺・グループ）そのもの。ほかのツールで使う \\
+\texttt{plantuml} & activity ビュー専用。PlantUML で UML のアクティビティ図にする \\
+\texttt{pnml} & petri ビュー専用。Petri ネットの標準形式 PNML（ISO/IEC 15909-2） \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\begin{lstlisting}[style=shell]
+# Graphviz で PDF にする
+aic graph examples/tutorial/05_parallel_barrier.awhdl \
+    --view behavior --format dot | dot -Tpdf -o behavior.pdf
+
+# PlantUML でアクティビティ図にする
+aic graph examples/tutorial/05_parallel_barrier.awhdl \
+    --view activity --format plantuml --output activity.puml
+java -jar plantuml.jar activity.puml
+
+# ラベルを 1 行に縮める / 機密区分や route も表示する
+aic graph ... --compact
+aic graph ... --show-classification --show-capabilities
+\end{lstlisting}
+
+本節の図は \texttt{docs/tutorial/figures/build.sh} で作り直せます。
+
+\begin{table}[h]
+\centering
+\caption{\texttt{aic graph} の終了状態}
+\begin{tabular}{cl}
+\toprule
+状態 & 意味 \\
+\midrule
+0 & 成功 \\
+1 & 構文解析に失敗 \\
+2 & 構造または Profile の検査に失敗 \\
+3 & 情報フローの検査だけに失敗 \\
+4 & 図にできない（state ビュー、architecture が複数で選ばれていない：G401） \\
+5 & 指定した形式でそのビューを表せない（例：security ビューを PNML で：G501） \\
+6 & ファイルを読めない、または書けない \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{構成を見る：structure ビュー}
+
+図\ref{fig:structure}は \ex{02\_prolog\_verdict.awhdl} の構成です。ポートは entity の枠の外、
+signal と device は中に置かれ、device は配置ごとの zone（ここでは local）に入ります。
+実線はデータの流れ、破線は事象による起動です。\texttt{rules} の失敗（\texttt{failed}）が
+\texttt{verdict} を書く process を起動することも読み取れます。
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.75\linewidth]{figures/structure_02.pdf}
+\caption{structure ビュー（\ex{02\_prolog\_verdict.awhdl}、\texttt{--show-capabilities}）}\label{fig:structure}
+\end{figure}
+
+\subsection{振る舞いを見る：behavior ビュー}
+
+図\ref{fig:behavior}は \ex{05\_parallel\_barrier.awhdl} の振る舞いです。
+
+\begin{itemize}
+  \item 細い角丸の四角が process、太い角丸の四角が device の呼び出し、四角が signal、
+        旗の形が device の事象（\texttt{prover.failed}）です。
+  \item 破線は非同期の関係（事象による起動、呼び出しの完了）、実線は process の中の制御です。
+  \item 六角形の \texttt{parallel} から分かれた呼び出しは、\texttt{commit together} でまとめて反映されます。
+        この合流とバリアは、同じ実行・同じ世代の結果だけをそろえます。
+  \item \texttt{prover.failed} のように、どこかの process が待っている事象だけを描きます。
+        待たれていない事象も描くには \texttt{--show-internal} を付けます。
+\end{itemize}
+
+\begin{figure}[!htbp]
+\centering
+\includegraphics[height=0.8\textheight]{figures/behavior_05.pdf}
+\caption{behavior ビュー（\ex{05\_parallel\_barrier.awhdl}）}\label{fig:behavior}
+\end{figure}
+
+フィードバックループ（\ex{04\_feedback\_loop.awhdl}）では、ループを閉じる辺に \texttt{loop} と表示されます。
+
+\subsection{UML アクティビティ図：activity ビュー}
+
+図\ref{fig:activity}は同じ設計のアクティビティ図です。process ごとに1つのアクティビティがあり、
+開始（黒丸）→ 起動する事象の受信（左が尖った五角形）→ アクション（角丸）→ 事象の送信
+（右が尖った五角形）→ 終了（二重丸）と進みます。\texttt{parallel} は太い棒の fork と join に、
+呼び出しの成否はひし形の分岐になります。バリアも 1 つのアクティビティで、メンバーの変化を
+すべて受け取ると \texttt{both.ready} を送ります。
+
+アクティビティ同士は線で結ばれません。UML と同じく、送信と受信の\textbf{シグナル名}でつながります。
+たとえば右端のバリアが送る \texttt{both.ready} を、2 番目のアクティビティが受け取ります。
+
+\begin{figure}[!htbp]
+\centering
+\includegraphics[width=\linewidth]{figures/activity_05.pdf}
+\caption{activity ビュー（\ex{05\_parallel\_barrier.awhdl}）}\label{fig:activity}
+\end{figure}
+
+\subsection{Petri ネット：petri ビュー}
+
+図\ref{fig:petri}は \ex{04\_feedback\_loop.awhdl} を Petri ネットにしたものです。
+丸が place（状態）、四角が transition（動作）で、線は必ず丸と四角を結びます。
+
+\begin{itemize}
+  \item 黒い点はトークンです。入力ポート \texttt{code} で起動する process の place
+        （\texttt{p1 woken}）にだけ、最初からトークンがあります。
+  \item \texttt{round} を変える書き込みから \texttt{p2 woken} へ戻る破線が、フィードバックループです。
+  \item 分岐の条件（\texttt{[round >= 1 and round <= 3]}）は評価せず、どちらの分岐も起こり得るものとして
+        描きます。書き込みも「値が変わった（changed）」と「変わらなかった（unchanged）」に分かれます。
+  \item 呼び出しは成功・失敗・timeout の 3 つの transition が競合します。
+\end{itemize}
+
+データを抽象化しているため、設計の実際の実行はどれもこのネットの発火列になりますが、逆は成り立ちません。
+「この状態に到達し得るか」を調べる安全性の解析には使えますが、停止性の解析には使えません。
+\texttt{--format pnml} で出力すると、Petri ネットの解析ツールで読み込めます。
+
+\begin{figure}[!htbp]
+\centering
+\includegraphics[height=0.85\textheight]{figures/petri_04.pdf}
+\caption{petri ビュー（\ex{04\_feedback\_loop.awhdl}）}\label{fig:petri}
+\end{figure}
+
+\subsection{情報フローを見る：security ビュー}
+
+図\ref{fig:security}は、公式サンプル \texttt{examples/secure\_cooperation.awhdl}（第\ref{sec:declassify}節）の
+情報フローです。signal は機密区分ごとの枠にまとめられます。
+
+\begin{itemize}
+  \item 紫の太線（\texttt{declassified}）が機密解除です。区分が下がるのはこの辺だけで、
+        \texttt{release} が \texttt{draft}（restricted）を \texttt{anonymous}（internal）にします。
+        解除の前に \texttt{draft} が PII 検査（\texttt{pii\_check}）に渡ることも描かれます。
+  \item 太線はクラウドへ出る流れです。クラウドの \texttt{frontier} に届くのは \texttt{anonymous}（internal）と
+        \texttt{question}（public）だけです。
+  \item 赤い点線（\texttt{DENIED}）は\textbf{拒否される流れ}です。\texttt{restricted} の区分は
+        すべてクラウドへ送れません。区分の枠全体が拒否されるときは、枠から 1 本にまとめて描きます。
+  \item 拒否や解除は色だけでなく線の種類と文字でも示すので、白黒で印刷しても区別できます。
+\end{itemize}
+
+\begin{sidewaysfigure}
+\centering
+\includegraphics[width=\linewidth]{figures/security.pdf}
+\caption{security ビュー（\texttt{examples/secure\_cooperation.awhdl}）}\label{fig:security}
+\end{sidewaysfigure}
+
+図\ref{fig:petri-coop}は同じサンプルの Petri ネットです。activity・petri・behavior のビューでは、
+device の \texttt{location} から\textbf{レーン}を描き、保護領域（\texttt{local (protected)}、緑）と
+外部領域（\texttt{cloud (external)}、青）の境界を示します。クラウドで起きるのは \texttt{frontier.analyze} の
+結果だけで、境界を越える線は太線になります。機密解除は、紫の \texttt{granted} の transition と
+\texttt{refused} の transition の競合として描かれます。レーンを描かないときは \texttt{--no-lanes} を付けます。
+
+\begin{sidewaysfigure}
+\centering
+\includegraphics[width=\linewidth,height=0.8\textwidth,keepaspectratio]{figures/petri_coop.pdf}
+\caption{petri ビュー（\texttt{examples/secure\_cooperation.awhdl}）}\label{fig:petri-coop}
+\end{sidewaysfigure}
+
+第\ref{sec:flow}節の \ex{06\_information\_flow.awhdl} は検査に通らないため、図になりません。
+
+\begin{lstlisting}[style=shell]
+$ aic graph examples/tutorial/06_information_flow.awhdl --view security
+...:14:9: AWHDL-E301: Restricted data cannot flow to cloud device reviewer
+...: not drawn: the design does not pass aic check
+$ echo $?
+3
+\end{lstlisting}
+
+\begin{caution}[図は設計の説明であって、規則ではない]
+図は検査済みの設計から機械的に作られますが、実行の意味を決めるのは RUNTIME\_SPEC です。
+特に Petri ネットはデータを抽象化した近似です。図だけを根拠に「この設計は必ず止まる」などと
+判断しないでください。
+\end{caution}
+
+\FloatBarrier
 %======================================================================
 \section{device と route}
 
@@ -512,6 +791,9 @@ entity name is
 end name;
 
 architecture arch of name is
+    device rel : declassifier
+        generic (from => restricted, to => internal,
+                 filter => d, filter_method => check, approval => human);
     device d : agent | mcp | deterministic
         generic (route => "<route>", location => local | cloud,
                  clearance => public | internal | restricted);
@@ -529,6 +811,7 @@ begin
         timeout 2 min;
     begin
         d.method(<expr>) timeout 30 sec -> s1;
+        s1 <= declassify s2 using rel;
         s2 <= s1 + 1;
         if <expr> then null; elsif <expr> then null; else null; end if;
         parallel d.m1(a) -> s1; d.m2(a) -> s2; end parallel;
@@ -553,7 +836,7 @@ end arch;
 E001 & ソースファイルを読み取れない \\
 E101 & 構文エラー \\
 E201--E205 & 重複した entity・ポート・device・宣言、未知の entity \\
-E206 & 感度リストの未知の名前 \\
+E206 & 感度リストの未知の名前、または runtime が発生させない事象の名前（\texttt{d.completed} など） \\
 E207／E208／E209 & 未知の device、未知の出力先 \\
 E210 & 式の中の未知の名前 \\
 E211 & 正でない時間（タイマー周期、制限時間） \\
@@ -562,11 +845,19 @@ E214 & signal でないバリアのメンバー \\
 E215 & 2 つの parallel 分岐が同じ signal に書き込む \\
 E217 & 入力ポートへの書き込み \\
 E218 & device の generic の重複や型の誤り \\
+E219 & declassifier の宣言の誤り（範囲、手段、配置） \\
+E220 & declassifier でない device での解除、または declassifier の直接の呼び出し \\
 E301 & クラウドの device へ流せないデータ \\
 E302 & device の clearance を超えるデータ \\
 E303 & 高い区分のデータを低い区分の signal に保存 \\
+E304 & 暗黙のフロー：文脈の区分が書き込み先より強い \\
+E305 & 暗黙のフロー：cloud の下限以上の文脈でクラウドの device を呼ぶ \\
+E306 & 暗黙のフロー：文脈の区分が device の clearance を超える \\
+E307 & 解除するデータの区分が declassifier の \texttt{from} を超える \\
 E401 & v0.1 の Profile に含まれない構成要素 \\
 E402 & 未知の名前（区分、配置など） \\
+G401 & 図にできない（\texttt{aic graph}：state ビュー、architecture の曖昧さ） \\
+G501 & 指定した形式でそのビューを表せない（\texttt{aic graph}） \\
 \bottomrule
 \end{longtable}
 
@@ -578,6 +869,7 @@ E402 & 未知の名前（区分、配置など） \\
   \item \texttt{awhdl/docs/RUNTIME\_SPEC\_ja.md}：delta cycle、Effect、完了評価
   \item \texttt{awhdl/docs/SECURITY\_SPEC\_ja.md}：機密区分、capability、承認
   \item \texttt{awhdl/docs/GETTING\_STARTED\_ja.md}：最初の一歩
+  \item \texttt{awhdl/docs/GRAPH\_ja.md}：\texttt{aic graph} の使い方
 \end{itemize}
 
 \end{document}

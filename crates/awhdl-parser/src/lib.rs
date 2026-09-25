@@ -1,9 +1,9 @@
 use awhdl_ast::{
     ArchitectureDecl, AssertStmt, Assertion, Assignment, BarrierDecl, BinaryOp, BudgetDecl,
-    BudgetLimit, BudgetValue, ConcurrentStatement, DataType, Declaration, Design, DesignUnit,
-    DeviceCall, DeviceDecl, Duration, EntityDecl, Expr, Expression, Generic, GenericValue,
-    IfBranch, IfStmt, ParallelStmt, PortDecl, PortMode, ProcessStmt, SequentialStatement,
-    SignalDecl, Span, TimerDecl,
+    BudgetLimit, BudgetValue, ConcurrentStatement, DataType, Declaration, Declassify, Design,
+    DesignUnit, DeviceCall, DeviceDecl, Duration, EntityDecl, Expr, Expression, Generic,
+    GenericValue, IfBranch, IfStmt, ParallelStmt, PortDecl, PortMode, ProcessStmt,
+    SequentialStatement, SignalDecl, Span, TimerDecl,
 };
 use pest::Parser;
 use pest::error::{Error as PestError, LineColLocation};
@@ -88,6 +88,8 @@ fn is_keyword(rule: Rule) -> bool {
             | Rule::kw_never
             | Rule::kw_timeout
             | Rule::kw_on
+            | Rule::kw_declassify
+            | Rule::kw_using
             | Rule::kw_null
     )
 }
@@ -346,6 +348,15 @@ fn parse_sequential(pair: Pair<'_, Rule>) -> SequentialStatement {
     match statement.as_rule() {
         Rule::device_call => SequentialStatement::DeviceCall(parse_device_call(statement)),
         Rule::assignment => SequentialStatement::Assignment(parse_assignment(statement)),
+        Rule::declassify_stmt => {
+            let mut inner = items(statement);
+            SequentialStatement::Declassify(Declassify {
+                target: inner.next().expect("declassify target").as_str().to_owned(),
+                value: parse_expression(inner.next().expect("declassify value")),
+                declassifier: inner.next().expect("declassifier").as_str().to_owned(),
+                span: statement_span,
+            })
+        }
         Rule::null_stmt => SequentialStatement::Null {
             span: statement_span,
         },
