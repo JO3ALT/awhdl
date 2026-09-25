@@ -4,6 +4,7 @@ members = [
     "crates/awhdl-ast",
     "crates/awhdl-parser",
     "crates/awhdl-checker",
+    "crates/awhdl-graph",
     "crates/conductor-cli",
 ]
 resolver = "2"

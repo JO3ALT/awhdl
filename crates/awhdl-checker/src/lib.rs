@@ -358,19 +358,8 @@ impl<'a> Scope<'a> {
                 continue;
             };
             for trigger in &process.sensitivity {
-                let mut parts = trigger.split('.');
-                let root = parts.next().unwrap_or(trigger);
-                let member = parts.next();
-                let known = self.values.contains_key(root)
-                    || self.devices.contains_key(root)
-                    || self.timers.contains(root)
-                    || (self.barriers.contains(root) && member.is_none_or(|m| m == "ready"));
-                if !known {
-                    diagnostics.push(diag(
-                        "AWHDL-E206",
-                        format!("unknown process sensitivity name: {trigger}"),
-                        process.span,
-                    ));
+                if let Some(message) = self.sensitivity_error(trigger) {
+                    diagnostics.push(diag("AWHDL-E206", message, process.span));
                 }
             }
             if process.timeout.is_some_and(|time| time.millis == 0) {
@@ -384,6 +373,42 @@ impl<'a> Scope<'a> {
                 self.check_sequential(sequential, diagnostics);
             }
         }
+    }
+
+    /// A sensitivity name must be an event the runtime raises: `signal` /
+    /// `signal.changed`, `timer`, `barrier` / `barrier.ready`, or
+    /// `device.done` / `device.failed` / `device.timeout`. Anything else
+    /// would never wake the process.
+    fn sensitivity_error(&self, trigger: &str) -> Option<String> {
+        let (root, member) = match trigger.split_once('.') {
+            Some((root, member)) => (root, Some(member)),
+            None => (trigger, None),
+        };
+        let (what, allowed): (&str, &[Option<&str>]) = if self.values.contains_key(root) {
+            ("signal", &[None, Some("changed")])
+        } else if self.timers.contains(root) {
+            ("timer", &[None])
+        } else if self.barriers.contains(root) {
+            ("barrier", &[None, Some("ready")])
+        } else if self.devices.contains_key(root) {
+            ("device", &[Some("done"), Some("failed"), Some("timeout")])
+        } else {
+            return Some(format!("unknown process sensitivity name: {trigger}"));
+        };
+        if allowed.contains(&member) {
+            return None;
+        }
+        let expected = allowed
+            .iter()
+            .map(|member| match member {
+                Some(member) => format!("{root}.{member}"),
+                None => root.to_owned(),
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        Some(format!(
+            "{trigger} never fires: {what} {root} raises only {expected}"
+        ))
     }
 
     fn check_sequential(&self, statement: &SequentialStatement, diagnostics: &mut Vec<Diagnostic>) {
@@ -736,6 +761,41 @@ end secure;
             "device anonymizer : declassifier;\n    device reviewer : agent",
         );
         assert!(codes(&declassifier.replace("BODY", "null;")).contains(&"AWHDL-E401"));
+    }
+
+    #[test]
+    fn sensitivity_names_must_be_events_the_runtime_raises() {
+        let process = |names: &str| {
+            let source = FLOW
+                .replace(
+                    "signal count",
+                    "timer tick : period 1 sec;\n    barrier both (summary, private_summary);\n    signal count",
+                )
+                .replace("process(patient, notes)", &format!("process({names})"));
+            codes(&source.replace("BODY", "null;"))
+        };
+        for fires in [
+            "patient",
+            "notes.changed",
+            "tick",
+            "both",
+            "both.ready",
+            "local_llm.done",
+            "local_llm.failed",
+            "local_llm.timeout",
+        ] {
+            assert!(process(fires).is_empty(), "{fires} was rejected");
+        }
+        for never in [
+            "local_llm",
+            "local_llm.completed",
+            "notes.field",
+            "tick.ready",
+            "both.done",
+            "missing",
+        ] {
+            assert_eq!(process(never), ["AWHDL-E206"], "{never} was accepted");
+        }
     }
 
     #[test]

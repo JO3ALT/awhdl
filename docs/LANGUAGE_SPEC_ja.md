@@ -72,7 +72,12 @@ end process;
 
 式の結合は弱い順に: `or`、`and`、`not`、1つの比較（`=`、`/=`、`<`、`<=`、`>`、`>=`）、整数の `+` / `-`、
 リテラル（文字列、整数、`true` / `false`、時間）と名前（`signal`、`signal.field`、`device.done`）。
-キーワードは予約語であり、語境界が必要である。
+キーワードは予約語であり、語境界が必要である。ただし感度リストの `device.timeout` の `timeout` は
+メンバー名として書ける。
+
+感度名は runtime が発生させるイベントに限る: `signal` / `signal.changed`、`timer`、`barrier` /
+`barrier.ready`、`device.done` / `device.failed` / `device.timeout`。これ以外（`device` 単独、
+`device.completed`、`signal.field`、`timer.ready` など）は process を決して起動しないため `E206` とする。
 
 静的意味論（checker の診断）: `E2xx` は構造（未知または重複した名前、`in` ポートへの書き込み、
 不正な budget の項目や正でない時間、信号でない barrier のメンバー、1つの信号に書き込む2つの parallel

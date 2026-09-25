@@ -1,0 +1,72 @@
+-- Fixture for aic graph: every view of a hybrid local/cloud workflow.
+entity secure_development is
+    port (
+        task   : in  text<internal>;
+        source : in  text<restricted>;
+        result : out text<restricted>;
+        status : out text<internal>
+    );
+end secure_development;
+
+architecture hybrid of secure_development is
+    device local_coder : agent generic (location => local, clearance => restricted, route => "initial_coding");
+    device compiler : mcp generic (location => local, route => "build");
+    device tester : mcp generic (location => local, route => "test");
+    device cloud_reviewer : agent generic (location => cloud, clearance => internal, route => "deep_reasoning");
+    device operator : human generic (location => local);
+    signal candidate : text<restricted>;
+    signal build, tests : data<restricted>;
+    signal review : text<internal>;
+    signal note : text<public> := "ready";
+    signal retry : number<internal> := 0;
+    timer heartbeat : period 30 sec;
+    barrier validated (build, tests);
+    budget run_budget is
+        iterations <= 10;
+        wall_time <= 2 hour;
+    end budget;
+begin
+    assert never (internal -> cloud);
+
+    process(task, source) timeout 10 min;
+    begin
+        local_coder.run(task, source) timeout 5 min -> candidate;
+    on timeout
+        status <= "coder timed out";
+    end process;
+
+    process(candidate)
+    begin
+        parallel
+            compiler.build(candidate) -> build;
+            tester.run(candidate) -> tests;
+        end parallel;
+    end process;
+
+    process(validated.ready)
+    begin
+        if build.ok and tests.ok then
+            operator.approve(candidate) -> result;
+        elsif retry < 10 then
+            retry <= retry + 1;
+            local_coder.run(task, source) -> candidate;
+        else
+            status <= "failed";
+        end if;
+    end process;
+
+    process(status)
+    begin
+        cloud_reviewer.review(note) -> review;
+    end process;
+
+    process(heartbeat, compiler.failed)
+    begin
+        assert retry <= 10;
+    end process;
+
+    process(local_coder.timeout)
+    begin
+        status <= "coder timed out";
+    end process;
+end hybrid;

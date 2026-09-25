@@ -14,7 +14,7 @@
 - Specification: draft v0.2; implementation scope: PROFILE_v0.1.
 - Compiler: parser, static checker (structure `E2xx`, information flow `E3xx`,
   profile `E4xx`) and compilation to the Rust runtime with route binding.
-- CLI: `aic check <file>`; `aiconductor run-design <file> --input name=value`.
+- CLI: `aic check <file>`; `aic graph <file>` ([drawing designs](GRAPH.md)); `aiconductor run-design <file> --input name=value`.
 - Runtime: delta-cycle execution of processes, timers, timeouts, parallel
   blocks, barriers, budgets and assertions; device calls through the engine's
   capability, Effect, approval and audit path.

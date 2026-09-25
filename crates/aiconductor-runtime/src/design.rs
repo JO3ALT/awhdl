@@ -1000,6 +1000,28 @@ end flow;
     }
 
     #[tokio::test]
+    async fn a_call_timeout_wakes_processes_sensitive_to_device_timeout() {
+        let design = design(
+            "",
+            r#"
+    process(task)
+    begin
+        coder.run(task) timeout 10 ms -> candidate;
+    end process;
+    process(coder.timeout)
+    begin
+        report <= "call timed out";
+    end process;
+"#,
+        )
+        .unwrap();
+        let mut slow = fake(|_, _, _| Ok(json!("late")));
+        slow.delay = Duration::from_millis(200);
+        let outcome = DesignRun::new(&design, slow).run(task("x")).await.unwrap();
+        assert_eq!(outcome.outputs["report"], json!("call timed out"));
+    }
+
+    #[tokio::test]
     async fn parallel_results_commit_together_and_barrier_fires() {
         let design = design(
             "signal left_result, right_result : number<internal>;\n    barrier both (left_result, right_result);",

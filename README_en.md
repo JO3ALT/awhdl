@@ -100,9 +100,13 @@ Requirements:
 cargo test --workspace
 cargo run -p conductor-cli -- check examples/hello.awhdl
 cargo run -p conductor-cli -- check examples/hello.awhdl --output json
+cargo run -p conductor-cli -- graph examples/tutorial/05_parallel_barrier.awhdl --view behavior
 ```
 
-Parse and structural errors return a non-zero status and a source location.
+Parse and structural errors return a non-zero status and a source location. `aic graph` draws a checked design as
+a Mermaid, Graphviz DOT or JSON diagram (structure, behavior, petri, security and activity views; the activity view also as PlantUML and the
+petri view as PNML;
+see [Drawing designs](docs/GRAPH.md)).
 
 ## Documentation
 
@@ -113,6 +117,7 @@ Parse and structural errors return a non-zero status and a source location.
 | Getting started | [English](docs/GETTING_STARTED.md) | [日本語](docs/GETTING_STARTED_ja.md) |
 | Tutorial (TeX / PDF, examples verified on live devices) | — | [PDF](docs/tutorial/awhdl_tutorial_ja.pdf), [TeX](docs/tutorial/awhdl_tutorial_ja.tex) |
 | Implementation status | [English](docs/IMPLEMENTATION_STATUS.md) | [日本語](docs/IMPLEMENTATION_STATUS_ja.md) |
+| Drawing designs (`aic graph`) | [English](docs/GRAPH.md) | [日本語](docs/GRAPH_ja.md) |
 | Security model | [English](docs/SECURITY_MODEL.md) | [日本語](docs/SECURITY_MODEL_ja.md) |
 | Design decisions | [English](docs/DESIGN_DECISIONS.md) | [日本語](docs/DESIGN_DECISIONS_ja.md) |
 | Publication checklist | [English](docs/PUBLICATION_CHECKLIST.md) | [日本語](docs/PUBLICATION_CHECKLIST_ja.md) |
@@ -140,6 +145,7 @@ precedence.
 - `awhdl-ast`: AST definitions and source byte spans.
 - `awhdl-parser`: Pest grammar and AST construction.
 - `awhdl-checker`: structural, information-flow and profile checks.
+- `awhdl-graph`: diagrams of checked designs (view projection and Mermaid, DOT and JSON output).
 - `conductor-cli`: the `aic` command-line frontend.
 - `aiconductor-runtime`: compiles AWHDL designs and runs them with delta
   cycles; Effects, approval, capabilities and completion

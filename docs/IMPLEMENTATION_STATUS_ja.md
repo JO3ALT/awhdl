@@ -13,7 +13,7 @@
 - 仕様: ドラフト v0.2。実装範囲: PROFILE_v0.1
 - コンパイラ: parser、静的検査（構造 `E2xx`・情報フロー `E3xx`・Profile `E4xx`）、
   route への束縛を伴う Rust runtime へのコンパイル
-- CLI: `aic check <file>`、`aiconductor run-design <file> --input name=value`
+- CLI: `aic check <file>`、`aic graph <file>`（[図示](GRAPH_ja.md)）、`aiconductor run-design <file> --input name=value`
 - ランタイム: process・timer・timeout・parallel・barrier・budget・assertion を
   delta cycle で実行。device 呼び出しは engine の capability・Effect・承認・監査の経路を通る
 

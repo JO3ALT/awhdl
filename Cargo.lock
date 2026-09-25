@@ -140,6 +140,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "awhdl-graph"
+version = "0.1.0"
+dependencies = [
+ "awhdl-ast",
+ "awhdl-checker",
+ "awhdl-parser",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "awhdl-parser"
 version = "0.1.0"
 dependencies = [
@@ -271,6 +282,7 @@ name = "conductor-cli"
 version = "0.1.0"
 dependencies = [
  "awhdl-checker",
+ "awhdl-graph",
  "awhdl-parser",
  "clap",
  "serde",

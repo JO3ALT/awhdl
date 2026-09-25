@@ -59,9 +59,10 @@ AWHDLはハードウェア記述言語の並行性・信号・イベントとい
 cargo test --workspace
 cargo run -p conductor-cli -- check examples/hello.awhdl
 cargo run -p conductor-cli -- check examples/hello.awhdl --output json
+cargo run -p conductor-cli -- graph examples/tutorial/05_parallel_barrier.awhdl --view behavior
 ```
 
-解析または構造検査に失敗すると、ソース位置を示して0以外の終了状態を返します。
+解析または構造検査に失敗すると、ソース位置を示して0以外の終了状態を返します。`aic graph` は検査を通った設計を Mermaid・Graphviz DOT・JSON の図にします（structure・behavior・petri・security・activity の各ビュー。activity は PlantUML、petri は PNML でも出力。[図示](docs/GRAPH_ja.md)）。
 
 ## ドキュメント
 
@@ -72,6 +73,7 @@ cargo run -p conductor-cli -- check examples/hello.awhdl --output json
 | はじめに | [日本語](docs/GETTING_STARTED_ja.md) | [English](docs/GETTING_STARTED.md) |
 | チュートリアル（TeX / PDF、実機で確認した例つき） | [PDF](docs/tutorial/awhdl_tutorial_ja.pdf)・[TeX](docs/tutorial/awhdl_tutorial_ja.tex) | — |
 | 実装状況 | [日本語](docs/IMPLEMENTATION_STATUS_ja.md) | [English](docs/IMPLEMENTATION_STATUS.md) |
+| 図示（`aic graph`） | [日本語](docs/GRAPH_ja.md) | [English](docs/GRAPH.md) |
 | セキュリティモデル | [日本語](docs/SECURITY_MODEL_ja.md) | [English](docs/SECURITY_MODEL.md) |
 | 設計判断 | [日本語](docs/DESIGN_DECISIONS_ja.md) | [English](docs/DESIGN_DECISIONS.md) |
 | 公開前チェックリスト | [日本語](docs/PUBLICATION_CHECKLIST_ja.md) | [English](docs/PUBLICATION_CHECKLIST.md) |
@@ -92,6 +94,7 @@ cargo run -p conductor-cli -- check examples/hello.awhdl --output json
 - `awhdl-ast`: AST定義とソース上のバイト範囲
 - `awhdl-parser`: Pest文法とAST構築
 - `awhdl-checker`: 構造・情報フロー・Profile の静的検査
+- `awhdl-graph`: 検査済み設計の図示（ビューの射影と Mermaid・DOT・JSON 出力）
 - `conductor-cli`: `aic`コマンドラインフロントエンド
 - `aiconductor-runtime`: AWHDL 設計のコンパイルと delta cycle 実行、Effect・承認・capability・完了判定を持つ runtime（`aiconductor run-design`）
 

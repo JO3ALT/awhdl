@@ -29,7 +29,8 @@
 | `awhdl-ast` | `awhdl-ast` | AST types |
 | `awhdl-parser` | `awhdl-parser` | pest grammar (`awhdl.pest`) and parser |
 | `awhdl-checker` | `awhdl-checker` | static checks (structure `AWHDL-E2xx`, information flow `E3xx`, profile `E4xx`) |
-| `conductor-cli` | `conductor-cli` (`aic`) | `aic check` for AWHDL sources |
+| `awhdl-graph` | `awhdl-graph` | view projection of checked designs and Mermaid, DOT and JSON output |
+| `conductor-cli` | `conductor-cli` (`aic`) | `aic check` and `aic graph` for AWHDL sources |
 | `aiconductor-runtime` | `aiconductor` | Tokio runtime: execution state, dataflow, Effects, approvals, capabilities, completion, AWHDL design compilation and execution, engine, MCP/LLM clients, CLI |
 
 Rust edition 2024, async runtime Tokio, CLI parsing clap, parser pest.

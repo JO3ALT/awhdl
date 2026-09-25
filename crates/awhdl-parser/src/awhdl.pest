@@ -76,7 +76,8 @@ name = ${ ident ~ ("." ~ ident)* }
 data_type = { ident ~ (lt ~ ident ~ gt)? }
 ident_list = { ident ~ (comma ~ ident)* }
 name_list = { selected_name_or_ident ~ (comma ~ selected_name_or_ident)* }
-selected_name_or_ident = @{ ident ~ (dot ~ ident)? }
+// `timeout` is a keyword, but `device.timeout` is a sensitivity name.
+selected_name_or_ident = @{ ident ~ (dot ~ (ident | "timeout" ~ !ident_char))? }
 
 time_literal = ${ integer ~ WHITESPACE* ~ time_unit }
 time_unit = @{ ("ms" | "sec" | "min" | "hour" | "day") ~ !ident_char }

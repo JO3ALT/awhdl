@@ -82,7 +82,14 @@ end process;
 Expressions, loosest to tightest: `or`; `and`; `not`; one comparison
 (`=`, `/=`, `<`, `<=`, `>`, `>=`); `+` / `-` on integers; literals (string,
 integer, `true` / `false`, time) and names (`signal`, `signal.field`,
-`device.done`). Keywords are reserved and need word boundaries.
+`device.done`). Keywords are reserved and need word boundaries, except that
+`timeout` may be written as the member in the sensitivity name `device.timeout`.
+
+A sensitivity name must be an event the runtime raises: `signal` /
+`signal.changed`, `timer`, `barrier` / `barrier.ready`, or `device.done` /
+`device.failed` / `device.timeout`. Any other name (a bare `device`,
+`device.completed`, `signal.field`, `timer.ready`, ...) would never wake the
+process and is `E206`.
 
 Static semantics (checker diagnostics): `E2xx` structure (unknown or duplicate
 names, writes to `in` ports, invalid budget keys or non-positive times, barrier

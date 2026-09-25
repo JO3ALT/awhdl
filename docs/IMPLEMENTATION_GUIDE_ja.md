@@ -24,7 +24,8 @@
 | `awhdl-ast` | `awhdl-ast` | AST の型 |
 | `awhdl-parser` | `awhdl-parser` | pest 文法（`awhdl.pest`）と parser |
 | `awhdl-checker` | `awhdl-checker` | 静的検査（構造 `AWHDL-E2xx`、情報フロー `E3xx`、Profile `E4xx`） |
-| `conductor-cli` | `conductor-cli`（`aic`） | AWHDL ソースの `aic check` |
+| `awhdl-graph` | `awhdl-graph` | 検査済み設計のビュー射影と Mermaid・DOT・JSON 出力 |
+| `conductor-cli` | `conductor-cli`（`aic`） | AWHDL ソースの `aic check`・`aic graph` |
 | `aiconductor-runtime` | `aiconductor` | Tokio の runtime: 実行状態、dataflow、Effect、承認、capability、完了、AWHDL 設計のコンパイルと実行、engine、MCP / LLM クライアント、CLI |
 
 Rust edition 2024、非同期 runtime は Tokio、CLI 解析は clap、parser は pest。

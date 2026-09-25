@@ -45,7 +45,7 @@ functions; the profile test verifies that they exist and that any `yes` or
 | entity | language | v0.1 | yes | yes | yes | yes | `parses_minimal_hello_design`, `accepts_the_minimal_hello_structure`, `pipeline_runs_processes_in_delta_cycles` |
 | architecture | language | v0.1 | yes | yes | yes | yes | `parses_minimal_hello_design`, `accepts_the_minimal_hello_structure`, `pipeline_runs_processes_in_delta_cycles` |
 | device declaration | language | v0.1 | yes | yes | yes | yes | `rejects_an_unknown_device_call`, `parses_v01_declarations_statements_and_expressions`, `binding_checks_kind_location_route_and_budget_support` |
-| process with sensitivity list | language | v0.1 | yes | partial | yes | yes | `selected_sensitivity_remains_an_untyped_name_and_event_declarations_are_unsupported`, `pipeline_runs_processes_in_delta_cycles` |
+| process with sensitivity list | language | v0.1 | yes | partial | yes | yes | `selected_sensitivity_remains_an_untyped_name_and_event_declarations_are_unsupported`, `sensitivity_names_must_be_events_the_runtime_raises`, `a_call_timeout_wakes_processes_sensitive_to_device_timeout`, `pipeline_runs_processes_in_delta_cycles` |
 | signal / Value | language | v0.1 | yes | yes | yes | yes | `parses_v01_declarations_statements_and_expressions`, `values_change_only_on_assignment_of_a_different_value`, `conflicting_drivers_in_one_delta_are_rejected` |
 | Event | language | v0.1 | no | no | yes | yes | `equal_payload_events_remain_distinct_and_consumption_survives_replay`, `timeouts_fail_calls_and_run_on_timeout_handlers` |
 | Invocation (device call) | language | v0.1 | yes | yes | yes | yes | `rejects_an_unknown_device_call`, `device_identity_is_durable_before_dispatch_and_completion_is_bound` |
@@ -74,6 +74,7 @@ functions; the profile test verifies that they exist and that any `yes` or
 | basic capability check | security | v0.1 | n/a | n/a | yes | yes | `capabilities_unify_tool_file_sandbox_and_model_policy`, `capability_policy_changes_are_validated_against_routes` |
 | filesystem scope for planner paths | security | v0.1 | n/a | n/a | yes | yes | `planner_paths_outside_granted_scopes_are_denied`, `workspace_paths_are_scoped_and_outside_paths_are_denied` |
 | audit JSONL, metadata only | security | v0.1 | n/a | n/a | yes | yes | `run_store_dispatches_only_with_a_persisted_single_use_approval` |
+| graph views (aic graph) | tooling | v0.1 | n/a | yes | n/a | yes | `structure_places_devices_in_their_zones`, `security_view_lets_only_cleared_data_reach_the_cloud`, `behavior_view_shows_forks_generation_aware_joins_and_the_retry_loop`, `the_state_view_does_not_invent_states`, `petri_view_is_a_place_transition_net`, `activity_view_has_one_structured_activity_per_process_and_barrier`, `plantuml_and_pnml_render_only_the_view_they_can_express` |
 | declassifier | security | v0.2 | no | no | no | no | — |
 | HTTP MCP transport | device | v0.2 | n/a | n/a | no | no | — |
 | per-host network policy enforcement | security | v0.2 | n/a | n/a | no | no | Codex network is all-or-nothing (host:* only). |
@@ -90,9 +91,10 @@ Open v0.1 rows, derived from the matrix:
 
 - **Event declarations and completion syntax:** semantics are fixed and
   implemented, but source syntax is open (LANGUAGE_SPEC), so Parse is `no`.
-- **Static checks marked partial:** sensitivity members such as `x.changed` are
-  resolved by root name only; device kinds and route binding are checked at
-  compilation (runtime binding), not by the checker.
+- **Static checks marked partial:** device kinds and route binding are checked
+  at compilation (runtime binding), not by the checker. Sensitivity names are
+  checked to be events the runtime raises (2026-09-25; before that they were
+  resolved by root name only).
 - **parallel:** results commit together at the end of the delta cycle, but the
   v0.1 runtime dispatches the calls one after another.
 - **agent device / human approval tests:** live model runs are not verified;
